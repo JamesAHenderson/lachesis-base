@@ -46,8 +46,8 @@ func TestQI(t *testing.T) {
 	// numNodes := 70
 	// nodes := []int{20, 30, 40, 50, 60, 70, 80, 90, 100}
 	nodes := []int{20}
-	// stakeDist := stakeCumDist()             // for stakes drawn from distribution
-	// stakeRNG := rand.New(rand.NewSource(0)) // for stakes drawn from distribution
+	stakeDist := stakeCumDist()             // for stakes drawn from distribution
+	stakeRNG := rand.New(rand.NewSource(0)) // for stakes drawn from distribution
 	for _, numNodes := range nodes {
 
 		weights := make([]pos.Weight, numNodes)
@@ -56,7 +56,7 @@ func TestQI(t *testing.T) {
 			weights[i] = pos.Weight(1)
 
 			// for non-equal stake
-			// weights[i] = pos.Weight(sampleDist(stakeRNG, stakeDist)) // take a random sample from stake data distribution
+			weights[i] = pos.Weight(sampleDist(stakeRNG, stakeDist)) // take a random sample from stake data distribution
 		}
 		testQI(t, weights)
 	}
@@ -75,47 +75,47 @@ func testQI(t *testing.T, weights []pos.Weight) {
 	for i := range eventInterval {
 		eventInterval[i] = 11 //8000 // this determines how many milliseconds each node waits after creating an event to be allowed to create its next event
 	}
-	var metricParameter float64
-	metricParameter = 30 // a general purpose parameter for use in testign/development
+	// var metricParameter float64
+	// metricParameter = 30 // a general purpose parameter for use in testign/development
 	// offlineNodes := false // all nodes create events
 	offlineNodes := false // only Quorum nodes create events
-	particleSwarm(t, weights, QIParentCount[0], randParentCount[0], true, maxDelay, meanDelay, stdDelay, eventInterval, metricParameter, offlineNodes)
+	// particleSwarm(t, weights, QIParentCount[0], randParentCount[0], true, maxDelay, meanDelay, stdDelay, eventInterval, metricParameter, offlineNodes)
 
 	// simulatedAnnealing(t, weights, QIParentCount[0], randParentCount[0], true, maxDelay, meanDelay, stdDelay, eventInterval, metricParameter, offlineNodes)
 
 	// mp := []float64{2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30}
-	// for mp := 10.0; mp < 30; mp = mp + 2 {
-	// 	metricParameter = 1000 / mp
-	// 	fmt.Println("")
-	// 	fmt.Println("Metric Parameter: ", metricParameter)
-	// 	for i := range QIParentCount {
-	// 		var kChange Func
-	// 		offlineNodes = true
-	// 		start := time.Now()
-	// 		// testQuorumIndexerLatency(t, weights, QIParentCount[i], randParentCount[i], true, maxDelay, meanDelay, stdDelay, eventInterval, metricParameter, offlineNodes)
-	// 		elapsed := time.Since(start)
-	// 		fmt.Println("Root progress parent selection, quorum online. Took ", elapsed)
+	for metricParameter := 0.1; metricParameter <= 100.0; metricParameter = metricParameter + 0.1 {
+		// 	metricParameter = 1000 / mp
+		// 	fmt.Println("")
+		fmt.Println("Metric Parameter: ", metricParameter)
+		for i := range QIParentCount {
+			var kChange Func
+			// 	offlineNodes = true
+			start := time.Now()
+			// 	// testQuorumIndexerLatency(t, weights, QIParentCount[i], randParentCount[i], true, maxDelay, meanDelay, stdDelay, eventInterval, metricParameter, offlineNodes)
+			elapsed := time.Since(start)
+			// 	fmt.Println("Root progress parent selection, quorum online. Took ", elapsed)
 
-	// 		offlineNodes = false
-	// 		start = time.Now()
-	// 		testQuorumIndexerLatency(kChange, t, weights, QIParentCount[i], randParentCount[i], true, maxDelay, meanDelay, stdDelay, eventInterval, metricParameter, offlineNodes)
-	// 		elapsed = time.Since(start)
-	// 		fmt.Println("Root progress parent selection, all online. Took ", elapsed)
+			offlineNodes = false
+			start = time.Now()
+			testQuorumIndexerLatency(kChange, t, weights, QIParentCount[i], randParentCount[i], true, maxDelay, meanDelay, stdDelay, eventInterval, metricParameter, offlineNodes)
+			elapsed = time.Since(start)
+			fmt.Println("Root progress parent selection, all online. Took ", elapsed)
 
-	// 		// offlineNodes = true
-	// 		// start = time.Now()
-	// 		// testQuorumIndexerLatency(t, weights, eventCount, QIParentCount[i], randParentCount[i], false, maxDelay, meanDelay, stdDelay, eventInterval, metricParameter, offlineNodes)
-	// 		// elapsed = time.Since(start)
-	// 		// fmt.Println("HighestBefore parent selection, quourm online. Took ", elapsed)
+			// 		// offlineNodes = true
+			// 		// start = time.Now()
+			// 		// testQuorumIndexerLatency(t, weights, eventCount, QIParentCount[i], randParentCount[i], false, maxDelay, meanDelay, stdDelay, eventInterval, metricParameter, offlineNodes)
+			// 		// elapsed = time.Since(start)
+			// 		// fmt.Println("HighestBefore parent selection, quourm online. Took ", elapsed)
 
-	// 		// offlineNodes = false
-	// 		// start = time.Now()
-	// 		// testQuorumIndexerLatency(t, weights, eventCount, QIParentCount[i], randParentCount[i], false, maxDelay, meanDelay, stdDelay, eventInterval, metricParameter, offlineNodes)
-	// 		// elapsed = time.Since(start)
-	// 		// fmt.Println("HighestBefore parent selection, all online. Took ", elapsed)
-	// 	}
-	// 	// metricParameter = metricParameter + 10
-	// }
+			// 		// offlineNodes = false
+			// 		// start = time.Now()
+			// 		// testQuorumIndexerLatency(t, weights, eventCount, QIParentCount[i], randParentCount[i], false, maxDelay, meanDelay, stdDelay, eventInterval, metricParameter, offlineNodes)
+			// 		// elapsed = time.Since(start)
+			// 		// fmt.Println("HighestBefore parent selection, all online. Took ", elapsed)
+		}
+		// 	// metricParameter = metricParameter + 10
+	}
 }
 
 type particle struct {
@@ -291,11 +291,11 @@ func simulatedAnnealing(t *testing.T, weights []pos.Weight, QIParentCount int, r
 		} else if t > t0-1/math.Log(p)*math.Log(1.0/kMax-1.0) {
 			t = t0 - 1/math.Log(p)*math.Log(1.0/kMax-1.0)
 		}
-		t = t / 9
+		// t = t / 9
 		// t = t0 / 90
 		// t = 2.0 / 90.0 * float64(rand.Float64())
 		// t = k / 10
-		t = 2 * k
+		// t = 2 * k
 		tempDot.Y = uint64(t * DecimalUnit)
 
 		kChange.dots = append(kChange.dots, tempDot)
@@ -313,7 +313,7 @@ func simulatedAnnealing(t *testing.T, weights []pos.Weight, QIParentCount int, r
 	energyBest := energy
 	// dY := uint64(DecimalUnit / (n * n))
 	dY := uint64(2000)
-	nIter := 10000 //number of interations in the annealing process
+	nIter := 10000 //number of iterations in the annealing process
 	T := 0.025
 	k := 0.9999
 	for i := 0; i < nIter; i++ {
@@ -378,19 +378,20 @@ func perturbkChange(kChange Func, randSrc *rand.Rand, dY uint64) Func {
 	var subtract []int
 	var add []int
 	var kChangeNew Func
-	for i, dot := range kChange.dots {
-		kChangeNew.dots = append(kChangeNew.dots, dot)
-		// }
-		// i := randSrc.Intn(len(kChange.dots))
-		sign := randSrc.Intn(3) - 1
-		// sign := randSrc.Intn(2)
+	for _, dot := range kChange.dots {
 
-		if sign < 0 {
-			subtract = append(subtract, i)
-		} else if sign > 0 {
-			add = append(add, i)
-		}
+		kChangeNew.dots = append(kChangeNew.dots, dot)
 	}
+	i := randSrc.Intn(len(kChange.dots))
+	sign := randSrc.Intn(3) - 1
+	// sign := randSrc.Intn(2)
+
+	if sign < 0 {
+		subtract = append(subtract, i)
+	} else if sign > 0 {
+		add = append(add, i)
+	}
+	// }
 	// for _, i := range subtract {
 	// 	if kChange.dots[i].Y > dY {
 	// 		kChangeNew.dots[i].Y = kChange.dots[i].Y - dY
@@ -570,7 +571,7 @@ func testQuorumIndexerLatency(kChange Func, t *testing.T, weights []pos.Weight, 
 
 	noNewEvents := 0
 
-	tMax := 10000 // in units of milliseconds; 60 000 = simulation of 1 minute of network activity
+	tMax := 50000 // in units of milliseconds; 60 000 = simulation of 1 minute of network activity
 	// now start the simulation
 	for time < tMax {
 		// move forward one timestep
@@ -685,8 +686,10 @@ func testQuorumIndexerLatency(kChange Func, t *testing.T, weights []pos.Weight, 
 
 						// get heads for parent selection
 						var heads dag.Events
+						var allHeads dag.Events
 						for _, head := range headsAll[self] {
 							heads = append(heads, head)
+							allHeads = append(allHeads, head)
 						}
 						for i := range heads {
 							if selfParent[self].BaseEvent.ID() == heads[i].ID() {
@@ -775,7 +778,7 @@ func testQuorumIndexerLatency(kChange Func, t *testing.T, weights []pos.Weight, 
 						createRandEvent := false
 						if online[selfID] == true {
 							// self is online
-							if createRandEvent || isLeaf[self] || readyToEmit(kChange, newQI, quorumIndexers[self], *e, busyRate, &eTimes[self], metricParameter, newEventReceived[self], QIParentCount+randParentCount, idx.Validator(nodeCount), online) {
+							if createRandEvent || isLeaf[self] || readyToEmit(kChange, newQI, quorumIndexers[self], *e, busyRate, &eTimes[self], metricParameter, newEventReceived[self], QIParentCount+randParentCount, idx.Validator(nodeCount), online, allHeads.IDs()) {
 								//create an event if (i) leaf event, or (ii) event timing condition is met, or (iii) a random event is created
 								isLeaf[self] = false                          // only create one leaf event
 								noNewEvents = 0                               //reset timer counting time interval during which no event has been created
@@ -824,7 +827,7 @@ func testQuorumIndexerLatency(kChange Func, t *testing.T, weights []pos.Weight, 
 	}
 	fmt.Print("Max Frame: ", maxFrame)
 	// fmt.Println("Time ", float64(time)/1000.0, " seconds")
-	// fmt.Println("Frames per second: ", (1000.0*float64(maxFrame))/float64(time))
+	fmt.Println("Frames per second: ", (1000.0*float64(maxFrame))/float64(time))
 	fmt.Println(" Number of Events: ", totalEventsComplete)
 
 	numOnlineNodes := 0
@@ -959,7 +962,7 @@ func delayCumDist() (cumDist []float64) {
 	return cumDist
 }
 
-func readyToEmit(kChange Func, newQI bool, quorumIndexer ancestor.QuorumIndexer, e QITestEvent, busyRate *rate.Gauge, times *emissionTimes, metricParameter float64, newEventReceived pos.WeightCounter, nParents int, nodeCount idx.Validator, online map[idx.ValidatorID]bool) (ready bool) {
+func readyToEmit(kChange Func, newQI bool, quorumIndexer ancestor.QuorumIndexer, e QITestEvent, busyRate *rate.Gauge, times *emissionTimes, metricParameter float64, newEventReceived pos.WeightCounter, nParents int, nodeCount idx.Validator, online map[idx.ValidatorID]bool, allHeads hash.Events) (ready bool) {
 	passedTime := times.nowTime - times.prevTime
 	// if passedTime >= maxEmissionInterval {
 	// maximum limit of event emission interval reached, so emit a new event
@@ -970,17 +973,17 @@ func readyToEmit(kChange Func, newQI bool, quorumIndexer ancestor.QuorumIndexer,
 	if len(e.Parents()) > 1 { // need at aleast one parent other than self
 
 		//piecewise linear function condition
-		if passedTime > times.minInterval {
-			kNew, kWorld := quorumIndexer.PiecewiseLinearCondition(e.Parents(), online)
-			fkWorld := float64(kChange.Get(uint64(kWorld*DecimalUnit))) / DecimalUnit
-			fkNew := float64(kChange.Get(uint64(kNew*DecimalUnit))) / DecimalUnit
-			metric := fkNew - fkWorld
-			if metric*float64(passedTime) > 90.0 {
-				// if adjustment > uint64(DecimalUnit)/90 {
-				// fmt.Print(",", kNew)
-				return true
-			}
-		}
+		// if passedTime > times.minInterval {
+		// 	kNew, kWorld := quorumIndexer.PiecewiseLinearCondition(e.Parents(), online)
+		// 	fkWorld := float64(kChange.Get(uint64(kWorld*DecimalUnit))) / DecimalUnit
+		// 	fkNew := float64(kChange.Get(uint64(kNew*DecimalUnit))) / DecimalUnit
+		// 	metric := fkNew - fkWorld
+		// 	if metric*float64(passedTime) > 90.0 {
+		// 		// if adjustment > uint64(DecimalUnit)/90 {
+		// 		// fmt.Print(",", kNew)
+		// 		return true
+		// 	}
+		// }
 
 		// ***Logistic Online Growth (requries a reliable estimate of which nodes are online)****
 		// if passedTime > times.minInterval {
@@ -996,13 +999,35 @@ func readyToEmit(kChange Func, newQI bool, quorumIndexer ancestor.QuorumIndexer,
 
 		// ***Logistic Online Growth and Time****
 		// if passedTime > times.minInterval {
+		// 	_, metric := quorumIndexer.LogisticTimeComparison(metricParameter, float64(passedTime), e.Parents(), nParents, online)
+		// 	if metric {
+		// 		return true
+		// 	}
+		// }
+
+		// ***Logistic Online Growth and Time****
+		// if passedTime > times.minInterval {
 		// 	// metric := quorumIndexer.ExponentialTimingConditionByCount(e.Parents(), nParents, newEventReceived.Sum())
 		// 	_, metric := quorumIndexer.LogisticTimingConditionByCountOnlineAndTime(metricParameter, float64(passedTime), e.Parents(), nParents, online)
 		// 	if metric {
-		// 		// tk := quorumIndexer.LogisticTimingDeltat(e.Parents(), nParents, newEventReceived.Sum())
-		// 		// fmt.Println("k: ", kCond, ", Del t: ", passedTime, ", Now t: ", times.nowTime)
-		// 		// fmt.Print(",", float64(passedTime))
-		// 		// fmt.Print(",", kNew)
+		// tk := quorumIndexer.LogisticTimingDeltat(e.Parents(), nParents, newEventReceived.Sum())
+		// fmt.Println("k: ", kCond, ", Del t: ", passedTime, ", Now t: ", times.nowTime)
+		// fmt.Print(",", float64(passedTime))
+		// fmt.Print(",", kNew)
+		// 		return true
+		// 	}
+		// }
+
+		// ***Validator Comparison***
+		if passedTime > times.minInterval {
+			if quorumIndexer.ValidatorComparison(allHeads, e.Parents(), online, metricParameter) {
+				return true
+			}
+		}
+
+		// ***Validator Comparison and Time***
+		// if passedTime > times.minInterval {
+		// 	if quorumIndexer.ValidatorComparisonAndTime(float64(passedTime), allHeads, e.Parents(), online, metricParameter) {
 		// 		return true
 		// 	}
 		// }
