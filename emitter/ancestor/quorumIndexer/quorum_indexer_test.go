@@ -45,7 +45,7 @@ type QITestEvent struct {
 func TestQI(t *testing.T) {
 	// numNodes := 70
 	// nodes := []int{20, 30, 40, 50, 60, 70, 80, 90, 100}
-	nodes := []int{20}
+	nodes := []int{40}
 	stakeDist := stakeCumDist()             // for stakes drawn from distribution
 	stakeRNG := rand.New(rand.NewSource(0)) // for stakes drawn from distribution
 	for _, numNodes := range nodes {
@@ -90,7 +90,7 @@ func testQI(t *testing.T, weights []pos.Weight) {
 		fmt.Println("Metric Parameter: ", metricParameter)
 		for i := range QIParentCount {
 			var kChange Func
-			newQI := true
+			newQI := false
 			// 	offlineNodes = true
 			start := time.Now()
 			// testQuorumIndexerLatency(kChange, t, weights, QIParentCount[i], randParentCount[i], true, maxDelay, meanDelay, stdDelay, eventInterval, metricParameter, offlineNodes)
@@ -460,13 +460,14 @@ func testQuorumIndexerLatency(kChange Func, t *testing.T, weights []pos.Weight, 
 	randParentRNG := make([]*rand.Rand, numValidators)
 	randEvRNG := make([]*rand.Rand, numValidators)
 	for i := range weights {
-		time.Sleep(1 * time.Millisecond)
-		delayRNG[i] = rand.New(rand.NewSource(time.Now().UnixNano())) // use different seed with each run
+		time.Sleep(1 * time.Millisecond) //sleep a bit for seeding RNG
+		// delayRNG[i] = rand.New(rand.NewSource(time.Now().UnixNano())) // use different seed with each run
+		delayRNG[i] = rand.New(rand.NewSource(0)) // use same seed with each run
 		time.Sleep(1 * time.Millisecond)
 		randParentRNG[i] = rand.New(rand.NewSource(time.Now().UnixNano())) // use different seed with each run
 		randEvRNG[i] = rand.New(rand.NewSource(0))                         // use a fixed seed of 0 for comparison between runs
 	}
-	// randEvRate := 0.001 // sets the probability that an event will be created randomly
+	randEvRate := 0.001 // sets the probability that an event will be created randomly
 	// delayDist := delayCumDist()
 
 	// create a 2D slice with coordinates [node][node] that is used to store the delays/latencies in milliseconds between pairs of nodes
@@ -812,8 +813,8 @@ func testQuorumIndexerLatency(kChange Func, t *testing.T, weights []pos.Weight, 
 						eTimes[self].maxInterval = 2 * eTimes[self].minInterval
 						// elapsedCreate := time.Since(startCreate)
 						// fmt.Println("Create event took ", elapsedCreate)
-						// createRandEvent := randEvRNG[self].Float64() < randEvRate // used for introducing randomly created events
-						createRandEvent := false
+						createRandEvent := randEvRNG[self].Float64() < randEvRate // used for introducing randomly created events
+						// createRandEvent := false
 						if online[selfID] == true {
 							// startCreate := time.Now()
 							// self is online
@@ -941,7 +942,7 @@ func processEvent(input abft.EventStore, lchs *abft.TestLachesis, e *QITestEvent
 
 	lchs.DagIndexer.Flush()
 	// HighestBefore based quorum indexer needs to process the event
-	quorumIndexer.ProcessEvent(&e.BaseEvent, self == e.Creator())
+	quorumIndexer.ProcessEvent(&e.BaseEvent, self == e.Creator(), e.creationTime)
 
 	updateHeads(e, heads)
 	quorumIndexer.UpdateTimingStats(float64(time)-float64(e.creationTime), e.Creator())
@@ -1101,17 +1102,33 @@ func readyToEmit(kChange Func, newQI bool, quorumIndexer ancestor.QuorumIndexer,
 		// 	}
 		// }
 
+		// ***K Comparison***
+		// if passedTime > times.minInterval {
+		// 	condition := quorumIndexer.KComparison(float64(passedTime), allHeads, e.Parents(), online, metricParameter)
+		// 	if condition {
+		// 		return true
+		// 	}
+		// }
+
 		// ***Validator Comparison***
-		if passedTime > times.minInterval {
-			condition := quorumIndexer.ValidatorComparison(e.Parents(), online, metricParameter)
-			if condition {
-				return true
-			}
-		}
+		// if passedTime > times.minInterval {
+		// 	condition := quorumIndexer.ValidatorComparison(e.Parents(), online, metricParameter)
+		// 	if condition {
+		// 		return true
+		// 	}
+		// }
 
 		// ***Validator Comparison and Time***
 		// if passedTime > times.minInterval {
 		// 	if quorumIndexer.ValidatorComparisonAndTime(float64(passedTime), allHeads, e.Parents(), online, metricParameter) {
+		// 		return true
+		// 	}
+		// }
+
+		// ***Validator Receive Time Comparison***
+		// if passedTime > times.minInterval {
+		// 	condition := quorumIndexer.ReceiveTimeComparison(float64(passedTime), allHeads, e.Parents(), online, metricParameter)
+		// 	if condition {
 		// 		return true
 		// 	}
 		// }
@@ -1152,21 +1169,52 @@ func readyToEmit(kChange Func, newQI bool, quorumIndexer ancestor.QuorumIndexer,
 
 		// // ***go-opera event timing***
 
-		// if passedTime > times.minInterval {
-		// 	parents := e.Parents()
-		// 	metric := eventMetric(quorumIndexer.GetMetricOfViaParents(parents), e.Seq())
-		// 	metric = overheadAdjustedEventMetricF(numValidators, uint64(busyRate.Rate1()*piecefunc.DecimalUnit), metric) // +++how does busyRate work?
-		// 	adjustedPassedTime := passedTime * int(float64(metric)) / DecimalUnit
-		// 	// fmt.Println(" Timing metric: ", adjustedPassedTime, " Condition: ", times.minInterval)
-		// 	// if adjustedPassedTime >= times.minInterval {
-		// 	if adjustedPassedTime >= int(metricParameter) {
-		// 		// quorumIndexer.LogisticTimingCondition3(e.Parents(), nParents)
-		// 		// fmt.Print(",", float64(passedTime))
-		// 		// kNew, _ := quorumIndexer.LogisticTimingConditionByCountOnlineAndTime(metricParameter, float64(passedTime), e.Parents(), nParents, online)
-		// 		// fmt.Print(",", kNew)
-		// 		return true
-		// 	}
-		// }
+		if passedTime > times.minInterval {
+			parents := e.Parents()
+			metric := eventMetric(quorumIndexer.GetMetricOfViaParents(parents), e.Seq())
+			metric = overheadAdjustedEventMetricF(numValidators, uint64(busyRate.Rate1()*piecefunc.DecimalUnit), metric) // +++how does busyRate work?
+			adjustedPassedTime := passedTime * int(float64(metric)) / DecimalUnit
+			// fmt.Println(" Timing metric: ", adjustedPassedTime, " Condition: ", times.minInterval)
+			// if adjustedPassedTime >= times.minInterval {
+
+			totalStakeBefore := pos.Weight(0)
+			defaultConfirmingInterval := 120
+			for i, stake := range quorumIndexer.Validators.SortedWeights() {
+				vid := quorumIndexer.Validators.GetID(idx.Validator(i))
+
+				if quorumIndexer.Dagi.GetEvent(quorumIndexer.SelfParentEvent).Creator() == vid {
+					break
+				}
+				if online[vid] {
+					totalStakeBefore += stake
+				}
+
+			}
+			stakeRatio := uint64(totalStakeBefore) * uint64(piecefunc.DecimalUnit) / uint64(quorumIndexer.Validators.TotalWeight())
+			// passedTimeIdle := passedTime // since we don't have txs in the simulation, idle time is the same as passedTime
+			// metric is a decimal (0.0, 1.0], being an estimation of how much the event will advance the consensus
+
+			adjustedPassedIdleTime := adjustedPassedTime
+			// pos.Weight is uint32, so cast to uint64 to avoid an overflow
+
+			confirmingEmitIntervalRatio := confirmingEmitIntervalF(stakeRatio)
+			confirmingEmitIntervalRatio = confirmingEmitIntervalRatio / uint64(piecefunc.DecimalUnit)
+			expectedEmitIntervals := defaultConfirmingInterval * int(confirmingEmitIntervalRatio)
+			if adjustedPassedTime < 110 {
+				return false
+			}
+			if adjustedPassedIdleTime < expectedEmitIntervals {
+				return false
+			}
+			return true
+			// if adjustedPassedTime >= int(metricParameter) {
+			// 	// quorumIndexer.LogisticTimingCondition3(e.Parents(), nParents)
+			// 	// fmt.Print(",", float64(passedTime))
+			// 	// kNew, _ := quorumIndexer.LogisticTimingConditionByCountOnlineAndTime(metricParameter, float64(passedTime), e.Parents(), nParents, online)
+			// 	// fmt.Print(",", kNew)
+			// 	return true
+			// }
+		}
 
 		// ***RECEIVED STAKE***
 		// fmt.Println(" Timing metric: ", float64(newEventReceived.Sum()), " Condition: ", (metricParameter)*float64(newEventReceived.Quorum))
@@ -1301,6 +1349,36 @@ func overheadF(validatorsNum idx.Validator, busyRate uint64) uint64 {
 		busyRate = piecefunc.DecimalUnit
 	}
 	return validatorsToOverheadF(uint64(validatorsNum)) * busyRate / piecefunc.DecimalUnit
+}
+func confirmingEmitIntervalF(stakeRatio uint64) uint64 {
+	// confirmingEmitIntervalF is a piecewise function for validator confirming internal depending on a stake amount before him
+	confirmingEmitIntervalF := piecefunc.NewFunc([]piecefunc.Dot{
+		{
+			X: 0,
+			Y: 1.0 * piecefunc.DecimalUnit,
+		},
+		{
+			X: 0.34 * piecefunc.DecimalUnit,
+			Y: 1.05 * piecefunc.DecimalUnit,
+		},
+		{
+			X: 0.67 * piecefunc.DecimalUnit,
+			Y: 1.20 * piecefunc.DecimalUnit,
+		},
+		{
+			X: 0.8 * piecefunc.DecimalUnit,
+			Y: 10.0 * piecefunc.DecimalUnit,
+		},
+		{ // validators >0.8 emit confirming events very rarely
+			X: 0.81 * piecefunc.DecimalUnit,
+			Y: 50.0 * piecefunc.DecimalUnit,
+		},
+		{ // validators >0.8 emit confirming events very rarely
+			X: 1.0 * piecefunc.DecimalUnit,
+			Y: 60.0 * piecefunc.DecimalUnit,
+		},
+	})
+	return confirmingEmitIntervalF(stakeRatio)
 }
 
 func eventMetric(orig ancestor.Metric, seq idx.Event) ancestor.Metric {
