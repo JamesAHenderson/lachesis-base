@@ -84,7 +84,7 @@ func testQI(t *testing.T, weights []pos.Weight) {
 	// simulatedAnnealing(t, weights, QIParentCount[0], randParentCount[0], true, maxDelay, meanDelay, stdDelay, eventInterval, metricParameter, offlineNodes)
 
 	// mp := []float64{2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30}
-	for metricParameter := 20.0; metricParameter <= 100000.0; metricParameter = metricParameter + 10 {
+	for metricParameter := 0.85; metricParameter <= 100000.0; metricParameter = metricParameter + 0.05 {
 		// 	metricParameter = 1000 / mp
 		// 	fmt.Println("")
 		fmt.Println("Metric Parameter: ", metricParameter)
@@ -608,7 +608,7 @@ func testQuorumIndexerLatency(kChange Func, t *testing.T, weights []pos.Weight, 
 
 	noNewEvents := 0
 
-	tMax := 50000 // in units of milliseconds; 60 000 = simulation of 1 minute of network activity
+	tMax := 10000 // in units of milliseconds; 60 000 = simulation of 1 minute of network activity
 	// now start the simulation
 	for simTime < tMax {
 		// move forward one timestep
@@ -1140,35 +1140,35 @@ func readyToEmit(kChange Func, newQI bool, quorumIndexer ancestor.QuorumIndexer,
 		// }
 
 		// ***Validator Comparison***
-		if passedTime > times.minInterval {
-			_, condition := quorumIndexer.ValidatorComparison(e.Parents(), online, metricParameter)
-			if condition {
-				return true
-			}
-		}
+		// if passedTime > times.minInterval {
+		// 	_, condition := quorumIndexer.ValidatorComparison(e.Parents(), online, metricParameter)
+		// 	if condition {
+		// 		return true
+		// 	}
+		// }
 
 		// ***Validator Comparison combined HighestBefore***
-		if passedTime > times.minInterval {
-			alpha := 0.5
-			metricO, _ := quorumIndexer.ValidatorComparison(e.Parents(), online, metricParameter)
+		// if passedTime > times.minInterval {
+		// 	alpha := 0.5
+		// 	metricO, _ := quorumIndexer.ValidatorComparison(e.Parents(), online, metricParameter)
 
-			parents := e.Parents()
-			metricHB := quorumIndexer.GetMetricOfViaParents(parents)
-			metricHB = eventMetric(metricHB, e.Seq())
-			metricHB = overheadAdjustedEventMetricF(numValidators, uint64(busyRate.Rate1()*piecefunc.DecimalUnit), metricHB) // +++how does busyRate work?
-			metricHBF := float64(metricHB) / DecimalUnit
+		// 	parents := e.Parents()
+		// 	metricHB := quorumIndexer.GetMetricOfViaParents(parents)
+		// 	metricHB = eventMetric(metricHB, e.Seq())
+		// 	metricHB = overheadAdjustedEventMetricF(numValidators, uint64(busyRate.Rate1()*piecefunc.DecimalUnit), metricHB) // +++how does busyRate work?
+		// 	metricHBF := float64(metricHB) / DecimalUnit
 
-			combinedMetric := alpha*metricO + (1-alpha)*metricHBF
-			adjustedPassedTime := float64(passedTime) * combinedMetric
-			if float64(adjustedPassedTime) >= metricParameter {
-				// quorumIndexer.LogisticTimingCondition3(e.Parents(), nParents)
-				// fmt.Print(",", float64(passedTime))
-				// kNew, _ := quorumIndexer.LogisticTimingConditionByCountOnlineAndTime(metricParameter, float64(passedTime), e.Parents(), nParents, online)
-				// fmt.Print(",", kNew)
-				return true
-			}
+		// 	combinedMetric := alpha*metricO + (1-alpha)*metricHBF
+		// 	adjustedPassedTime := float64(passedTime) * combinedMetric
+		// 	if float64(adjustedPassedTime) >= metricParameter {
+		// 		// quorumIndexer.LogisticTimingCondition3(e.Parents(), nParents)
+		// 		// fmt.Print(",", float64(passedTime))
+		// 		// kNew, _ := quorumIndexer.LogisticTimingConditionByCountOnlineAndTime(metricParameter, float64(passedTime), e.Parents(), nParents, online)
+		// 		// fmt.Print(",", kNew)
+		// 		return true
+		// 	}
 
-		}
+		// }
 
 		// ***Validator Comparison with stake based time interval adjustement***
 		// if passedTime > times.minInterval {
@@ -1206,6 +1206,14 @@ func readyToEmit(kChange Func, newQI bool, quorumIndexer ancestor.QuorumIndexer,
 		// 		return true
 		// 	}
 		// }
+
+		// ***Validator Comparison Max Delay***
+		if passedTime > times.minInterval {
+			_, condition := quorumIndexer.ValidatorComparisonMaxDelay(e.Parents(), online, metricParameter)
+			if condition {
+				return true
+			}
+		}
 
 		// ***Validator Comparison and Time***
 		// if passedTime > times.minInterval {
