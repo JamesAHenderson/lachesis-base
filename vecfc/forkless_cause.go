@@ -83,7 +83,7 @@ func (vi *Index) forklessCause(aID, bID hash.Event) bool {
 }
 
 func (vi *Index) ForklessCauseProgress(aID, bID hash.Event, candidateParents, chosenParents hash.Events) (*pos.WeightCounter, []*pos.WeightCounter) {
-	// This function is used to determine progress of event aID toward satsifying the forkless cause condition for events a and b.
+	// This function is used to determine progress of event bID in forkless causing aID.
 	// It may be used to determine progress toward the forkless cause condition for an event not in vi, but whose parents are in vi.
 	// To do so, aID should be the self-parent while chosenParents should be the parents of the not-yet-created event.
 	// Further, this function can be used to determine the incremental improvement in progress toward satisfying the forkless

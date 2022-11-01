@@ -1,9 +1,11 @@
 package dagidx
 
 import (
+	"github.com/Fantom-foundation/lachesis-base/abft/election"
 	"github.com/Fantom-foundation/lachesis-base/hash"
 	"github.com/Fantom-foundation/lachesis-base/inter/dag"
 	"github.com/Fantom-foundation/lachesis-base/inter/idx"
+	"github.com/Fantom-foundation/lachesis-base/inter/pos"
 )
 
 type Seq interface {
@@ -32,9 +34,11 @@ type ForklessCause interface {
 	// This great property is the reason why this function exists,
 	// providing the base for the BFT algorithm.
 	ForklessCause(aID, bID hash.Event) bool
+	ForklessCauseProgress(aID, bID hash.Event, heads, chosenHeads hash.Events) []*pos.WeightCounter
 }
 
 type VectorClock interface {
 	GetMergedHighestBefore(id hash.Event) HighestBeforeSeq
 	GetEvent(hash.Event) dag.Event
+	GetFrameRoots(f idx.Frame) []election.RootAndSlot
 }

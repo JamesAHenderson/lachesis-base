@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Fantom-foundation/lachesis-base/abft/dagidx"
+	"github.com/Fantom-foundation/lachesis-base/abft/election"
 	"github.com/Fantom-foundation/lachesis-base/hash"
 	"github.com/Fantom-foundation/lachesis-base/inter/dag"
 	"github.com/Fantom-foundation/lachesis-base/inter/idx"
@@ -14,8 +15,25 @@ import (
 	"github.com/Fantom-foundation/lachesis-base/utils/wmedian"
 )
 
+type sortedRootKnowledge []RootKnowledge
+
+type RootKnowledge struct {
+	k     float64
+	stake pos.Weight
+	root  election.RootAndSlot
+}
+
+type sortedRootProgressMetrics []RootProgressMetrics
+
+type RootProgressMetrics struct {
+	idx   int
+	stake pos.Weight
+	k     float64
+}
+
 type DagIndex interface {
 	dagidx.VectorClock
+	dagidx.ForklessCause
 }
 type DiffMetricFn func(median, current, update idx.Event, validatorIdx idx.Validator) Metric
 
@@ -164,12 +182,10 @@ func (h *QuorumIndexer) GetSelfParentSeqs() []idx.Event {
 }
 
 func (h *QuorumIndexer) Choose(chosenParents hash.Events, candidateParents hash.Events) int {
-	metrics := make([]float64, len(candidateParents))
-	// first get metrics of each options
-	metrics = h.GetMetricsOfRootProgress(candidateParents, chosenParents) //should call GetMetricsofRootProgress
+	metrics := h.GetMetricsOfRootProgress(candidateParents, chosenParents) // metric for each candidate parent
 	if metrics == nil {
-		// this occurs if all head options are at a previous frame, and thus cannot progress the production of a root in the current frame
-		// in this case return a random head
+		// this occurs if all candidate parent are at a previous frame, and thus cannot progress the production of a root in the current frame
+		// in this case return a random candidate parent
 		return h.randParent.Intn(len(candidateParents))
 	}
 	// now sort options based on metrics in order of importance
@@ -180,9 +196,9 @@ func (h *QuorumIndexer) Choose(chosenParents hash.Events, candidateParents hash.
 
 func (h *QuorumIndexer) GetMetricsOfRootProgress(candidateParents hash.Events, chosenParents hash.Events) []RootProgressMetrics {
 	// This function is indended to be used in the process of
-	// selecting event parents from a set of candidate parents.
+	// selecting parents from a set of candidate parents.
 	// This function returns a metric of root knowledge for assessing
-	// the incremental progress when using each candidate head as a parent
+	// the incremental progress when using each candidate head as a parent.
 	// chosenParents are parents that have already been selected
 
 	// find the maximum frame number of all parents
@@ -202,36 +218,44 @@ func (h *QuorumIndexer) GetMetricsOfRootProgress(candidateParents hash.Events, c
 		}
 	}
 
+	var rootProgressMetrics []RootProgressMetrics // create a slice of metrics for each candidate parent that has reached maxFrame
+
 	// only retain candidateParents that have reached maxFrame
 	// (parents that haven't reached maxFrame cannot provide extra progress)
 	var maxFrameParents hash.Events
+	var tempMetric RootProgressMetrics
+	tempMetric.k = 0
 	for i, parent := range candidateParents {
 		if candidateParentFrame[i] >= maxFrame {
-			// rootProgressMetrics = append(rootProgressMetrics, h.newRootProgressMetrics(i))
+			tempMetric.idx = i
+			rootProgressMetrics = append(rootProgressMetrics, tempMetric)
 			maxFrameParents = append(maxFrameParents, parent)
 		}
 	}
-	rootProgressMetrics := make([]float64, len(maxFrameParents)) // create a slice of metrics for each candidate parent that has reached maxFrame
-
-	maxFrameRoots := h.lachesis.Store.GetFrameRoots(maxFrame)
-	for i, _ := range maxFrameParents {
-		candidateParents := make([]hash.Event, len(chosenParents)+1)
-		for j, head := range chosenParents {
-			candidateParents[j] = head
-		}
-		candidateParents[len(candidateParents)-1] = maxFrameParents[i]
-		rootProgressMetrics[i] = h.newRootProgress(maxFrame, h.SelfParentEvent, candidateParents) //best
+	// create a slice containing all chosen parents, and a candidate parent
+	parents := make([]hash.Event, len(chosenParents)+1)
+	for j, head := range chosenParents {
+		parents[j] = head
 	}
+	for i, candidateParent := range maxFrameParents {
+		parents[len(parents)-1] = candidateParent
+		rootProgressMetrics[i].k = h.progressTowardNewRoot(maxFrame, h.SelfParentEvent, parents)
+
+		candidateParentIdx := h.validators.GetIdx(h.dagi.GetEvent(candidateParent).Creator())
+		rootProgressMetrics[i].stake = h.validators.GetWeightByIdx(candidateParentIdx)
+
+	}
+
 	return rootProgressMetrics
 }
 
-func (h *QuorumIndexer) newRootProgress(frame idx.Frame, event hash.Event, chosenHeads hash.Events) float64 {
+func (h *QuorumIndexer) progressTowardNewRoot(frame idx.Frame, event hash.Event, chosenHeads hash.Events) float64 {
 	// This function computes the progress of a validator toward producing a new root
 	// This progress can be conceptualised via a binary matrix indexed by roots and validators
 	// The ijth entry of the matrix is 1 if root i is known by validator j in the subgraph of event, and zero otherwise
 	// A new root is created when quorum roots are each known by quorum validators in the subgraph of event
 	// (note that roots can be known by different sets of validators)
-	// Roots are sorted according to those that are closest to being known by quorum stake, with roots known
+	// This is a count based metric. Roots are sorted according to those that are closest to being known by quorum stake, with roots known
 	// by equal stake ordered according to the stake of the root's creator
 	// From these sorted roots the quorum most well known roots are taken
 	// For each of these sorted roots, the number of validators that know each root are counted.
@@ -241,71 +265,81 @@ func (h *QuorumIndexer) newRootProgress(frame idx.Frame, event hash.Event, chose
 	// the number of validators that know the root plus the minimum number of validators to reach quorum.
 	// The metric is in the range [0,1].
 
-	roots := h.lachesis.Store.GetFrameRoots(frame)
+	roots := h.dagi.GetFrameRoots(frame)
 
-	weights := h.validators.SortedWeights()
-	ids := h.validators.SortedIDs()
+	sortedWeights := h.validators.SortedWeights()
+	sortedIDs := h.validators.SortedIDs()
 
-	//calculate k_i for each root i
-	RootKnowledge := make([]KIdx, len(roots))
+	// find k_root, the number of validators that know each root, divided by the minimum number of validators for quorum
+	// up to a maximum of 1.0 (being known by more than quorum doesn't increase )
+	RootKnowledge := make([]RootKnowledge, len(roots))
 	for i, root := range roots {
-		FCProgress := h.lachesis.DagIndex.ForklessCauseProgress(event, root.ID, nil, chosenHeads) //compute for new event
+		RootKnowledge[i].root = root // record the root
+		rootValidatorIdx := h.validators.GetIdx(root.Slot.Validator)
+		rootStake := h.validators.GetWeightByIdx(rootValidatorIdx)
+		RootKnowledge[i].stake = rootStake // record the stake of the root
+
+		FCProgress := h.dagi.ForklessCauseProgress(event, root.ID, nil, chosenHeads) //compute ForklessCauseProgress to find which validators know root in event's subgraph
 		if FCProgress[0].HasQuorum() {
-			RootKnowledge[i].K = 1.0 //k_i has maximum value of 1 when root i is known by at least a quorum
+			RootKnowledge[i].k = 1.0 //k_root has maximum value of 1 when root is known by at least a quorum
 		} else {
-			// root i is known by less than a quorum
-			numCounted := FCProgress[0].NumCounted() //the number of nodes that know the root (the numerator of k_i)
-			// now find the denominator of k_i; the number of additional nodes needed to for quorum (if any)
+			// root is known by less than a quorum
+			numCounted := FCProgress[0].NumCounted() //the number of nodes that know root (the numerator of k_root)
+			// now find the denominator of k_root; the minimum number of additional nodes needed for quorum (if any)
 			numForQ := FCProgress[0].NumCounted()
 			stake := FCProgress[0].Sum()
-			for j, weight := range weights {
+			for j, weight := range sortedWeights {
 				if stake >= h.validators.Quorum() {
 					break
 				}
-				if FCProgress[0].Count(ids[j]) {
+				if FCProgress[0].Count(sortedIDs[j]) {
 					stake += weight
 					numForQ++
 				}
 			}
-			RootKnowledge[i].K = float64(numCounted) / float64(numForQ)
+			RootKnowledge[i].k = float64(numCounted) / float64(numForQ)
 		}
-		RootKnowledge[i].Root = root // record which root the k_i is for
+
 	}
 
-	//sort roots by k_i value to ge the best roots
-	sort.Sort(sortedKIdx(RootKnowledge))
+	//sort roots by k value to ge the most known roots by count
+	sort.Sort(sortedRootKnowledge(RootKnowledge))
 	var kNew float64 = 0
 
-	// sum k_i for the best known roots, to get the numerator of k
-	var bestRootsStake pos.Weight = 0
-	rootValidators := make([]idx.Validator, 0)
+	// now find combined knowledge of quorum best known roots
+	// sum k_root for the best known roots, to get the numerator
+	var bestRootsStake pos.Weight = 0            // used to count stake of the best known roots
+	rootValidators := make([]idx.ValidatorID, 0) // used to record which validators have had their root counted
 	numRootsForQ := 0.0
-	for _, kidx := range RootKnowledge {
-		rootValidatorIdx := h.validators.GetIdx(kidx.Root.Slot.Validator)
+	for _, rootK := range RootKnowledge {
+		rootValidatorIdx := h.validators.GetIdx(rootK.root.Slot.Validator)
 		rootStake := h.validators.GetWeightByIdx(rootValidatorIdx)
 		if bestRootsStake >= h.validators.Quorum() {
 			break
 		} else if bestRootsStake+rootStake <= h.validators.Quorum() {
-			kNew += kidx.K
+			kNew += rootK.k
 			bestRootsStake += rootStake
 			numRootsForQ++
-			rootValidators = append(rootValidators, rootValidatorIdx)
+			rootValidators = append(rootValidators, rootK.root.Slot.Validator)
 		} else {
-			kNew += kidx.K
+			kNew += rootK.k
 			bestRootsStake = h.validators.Quorum() // this will trigger the break condition above
 			numRootsForQ++
-			rootValidators = append(rootValidators, rootValidatorIdx)
+			rootValidators = append(rootValidators, rootK.root.Slot.Validator)
 		}
 	}
 
-	// calculate how many extra roots are needed for quorum (if any), to get the denominator of k
-	for i, weight := range weights {
+	// it may be that less than quorum roots have not been created yet
+	// to get the denominator calculate how many extra roots are needed for quorum (if any),
+	// starting from the largest validator
+	for i, weight := range sortedWeights {
 		if bestRootsStake >= h.validators.Quorum() {
 			break
 		}
+		// check if the validator has already been counted as one of the best known roots
 		notCounted := true
 		for _, rootValidator := range rootValidators {
-			if ids[i] == idx.ValidatorID(rootValidator) {
+			if sortedIDs[i] == rootValidator {
 				notCounted = false
 				break
 			}
@@ -316,4 +350,36 @@ func (h *QuorumIndexer) newRootProgress(frame idx.Frame, event hash.Event, chose
 		}
 	}
 	return kNew / numRootsForQ // this result should be less than or equal to 1
+}
+
+func (m sortedRootKnowledge) Len() int {
+	return len(m)
+}
+
+func (m sortedRootKnowledge) Swap(i, j int) {
+	m[i], m[j] = m[j], m[i]
+}
+
+func (m sortedRootKnowledge) Less(i, j int) bool {
+	if m[i].k != m[j].k {
+		return m[i].k > m[j].k
+	} else {
+		return m[i].stake > m[j].stake
+	}
+}
+
+func (m sortedRootProgressMetrics) Len() int {
+	return len(m)
+}
+
+func (m sortedRootProgressMetrics) Swap(i, j int) {
+	m[i], m[j] = m[j], m[i]
+}
+
+func (m sortedRootProgressMetrics) Less(i, j int) bool {
+	if m[i].k != m[j].k {
+		return m[i].k > m[j].k
+	} else {
+		return m[i].stake > m[j].stake
+	}
 }
