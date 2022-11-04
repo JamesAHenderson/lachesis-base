@@ -4,9 +4,9 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"math/rand"
+	"sort"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/Fantom-foundation/lachesis-base/abft"
 	"github.com/Fantom-foundation/lachesis-base/emitter/ancestor"
@@ -55,30 +55,31 @@ func TestQI(t *testing.T) {
 		weights[i] = pos.Weight(1)                               //for equal stake
 		weights[i] = pos.Weight(sampleDist(stakeRNG, stakeDist)) // for non-equal stake sample from Fantom main net validator stake distribution
 	}
-	QIParentCount := 3    // maximum number of parents selected by quorum indexer
-	randParentCount := 0  // maximum number of parents selected randomly
-	offlineNodes := false // set to true to make smallest non-quourm validators offline
+	sort.Slice(weights, func(i, j int) bool { return weights[i] > weights[j] }) // sort weights in order
+	QIParentCount := 3                                                          // maximum number of parents selected by quorum indexer
+	randParentCount := 0                                                        // maximum number of parents selected randomly
+	offlineNodes := false                                                       // set to true to make smallest non-quourm validators offline
 
 	// Uncomment the desired latency type
 
 	// Latencies between validators are drawn from a Normal Gaussian distribution
-	// var latency gaussianLatency
-	// latency.mean = 100 // mean latency in milliseconds
-	// latency.std = 100  // standard deviation of latency in milliseconds
-	// maxLatency := int(latency.mean + 4*latency.std)
+	var latency gaussianLatency
+	latency.mean = 100 // mean latency in milliseconds
+	latency.std = 10   // standard deviation of latency in milliseconds
+	maxLatency := int(latency.mean + 4*latency.std)
 
 	// Latencies between validators are modelled using a dataset of real world internet latencies between cities
-	var latency cityLatency
-	var seed int64
-	seed = 0                     //use this for the same seed each time the simulator runs
-	seed = time.Now().UnixNano() //use this for a different seed each time the simulator runs
-	maxLatency := latency.initialise(numNodes, seed)
+	// var latency cityLatency
+	// var seed int64
+	// seed = 0 //use this for the same seed each time the simulator runs
+	// // seed = time.Now().UnixNano() //use this for a different seed each time the simulator runs
+	// maxLatency := latency.initialise(numNodes, seed)
 
 	// Latencies between validators are drawn from a dataset of latencies observed by one Fantom main net validator. Note all pairs of validators will use the same distribution
 	// var latency mainNetLatency
 	// maxLatency := latency.initialise()
 
-	simulationDuration := 10000 // duration of the simulated time in milliseconds
+	simulationDuration := 50000 // length of simulated time in milliseconds
 	//Now run the simulation
 	simulate(weights, QIParentCount, randParentCount, offlineNodes, &latency, maxLatency, simulationDuration)
 
@@ -390,7 +391,7 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 	var totalEventsComplete int = 0
 	for i, nEv := range eventsComplete {
 		totalEventsComplete += nEv
-		fmt.Println("Stake: ", weights[i], "events: ", nEv, " events/stake: ", float64(nEv)/float64(weights[i]))
+		fmt.Println("Stake: ", weights[i], "event rate: ", float64(nEv)*1000/float64(simTime), " events/stake: ", float64(nEv)/float64(weights[i]))
 	}
 	var maxFrame idx.Frame = 0
 	for _, events := range headsAll {
@@ -401,12 +402,12 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 		}
 	}
 
-	fmt.Print("Max Frame: ", maxFrame)
-	fmt.Println("Frames per second: ", (1000.0*float64(maxFrame))/float64(simTime))
+	fmt.Println("Max Frame: ", maxFrame)
+	fmt.Println("[Indicator of TTF] Frames per second: ", (1000.0*float64(maxFrame))/float64(simTime))
 	fmt.Println(" Number of Events: ", totalEventsComplete)
 
 	fmt.Println("Event rate per (online) node: ", float64(totalEventsComplete)/float64(numOnlineNodes)/(float64(simTime)/1000.0))
-	fmt.Println("Average frames per event per (online) node: ", (float64(maxFrame))/(float64(totalEventsComplete)/float64(numOnlineNodes)))
+	fmt.Println("[Indictor of gas efficiency] Average events per frame per (online) node: ", (float64(totalEventsComplete))/(float64(maxFrame)*float64(numOnlineNodes)))
 
 }
 
@@ -572,6 +573,7 @@ func normalDistributionSample(rng *rand.Rand, mean float64, std float64) float64
 }
 
 func geographicLatencyData() (meanLatency [][]float64, STDLatency [][]float64) {
+	// This function contains a data set of the mean and standard deviation of latencies (in units of milliseconds) between pairs of cities
 	meanLatency = [][]float64{
 		[]float64{0.027, 155.2935, 256.06949999999995, 248.59, 243.616, 176.28449999999998, 289.29999999999995, 213.9065, 216.341, 104.142, 128.443, 85.85050000000001, 79.622, 142.1565, 243.573, 96.328, 208.2955, 247.687, 283.4625, 163.88049999999998, 192.556, 218.612, 205.12900000000002, 230.15699999999998, 277.58950000000004, 142.8265, 221.43900000000002, 252.4445, 316.12300000000005, 135.49349999999998, 145.383, 100.8785, 238.1205, 204.897, 247.77499999999998, 364.2605, 243.0695, 236.64, 171.0635, 90.453, 114.258, 142.07549999999998, 195.16649999999998, 191.635, 169.993, 341.981, 392.98699999999997, 264.346, 333.532, 203.7335, 220.0195, 265.4275, 266.794, 326.68899999999996, 385.121, 232.4925, 166.6635, 354.299, 132.74, 242.67950000000002, 246.903, 147.8175, 142.73000000000002, 109.97399999999999, 165.4885, 184.8005, 363.8455, 141.85750000000002, 276.1165, 224.563, 89.537, 111.92250000000001, 148.03199999999998, 149.96050000000002, 236.4805, 319.655, 152.348, 81.319, 141.76850000000002, 193.909, 318.394, 151.825, 143.88049999999998, 89.2205, 341.623, 332.652, 366.2545, 154.253, 299.7715, 297.55449999999996, 361.40549999999996, 282.517, 118.23349999999999, 116.515, 93.431, 239.735, 127.96199999999999, 377.84749999999997, 304.2095, 272.05949999999996, 104.69300000000001, 109.16550000000001, 325.9605, 160.5515, 175.365, 186.361, 173.65949999999998, 116.039, 124.17, 267.3465, 379.8675, 227.837, 181.2995, 173.25150000000002, 308.64, 201.5435, 159.5115, 307.629, 199.3235, 197.36599999999999, 97.93299999999999, 151.2965, 215.1835, 305.1915, 173.28449999999998, 323.9625, 97.3045, 334.57950000000005, 266.3775, 123.125, 115.61, 113.21549999999999, 176.61849999999998, 422.6995, 216.1805, 243.964, 202.4405, 221.19, 250.47899999999998, 262.218, 198.55, 174.9665, 250.149, 229.8545, 216.59199999999998, 224.5285, 243.02, 196.6825, 223.9265, 243.61149999999998, 220.55450000000002, 345.7015, 227.7165, 260.961, 215.216, 263.786, 208.5455, 198.66500000000002, 154.9805, 147.7, 360.79949999999997, 181.62400000000002, 156.289, 267.75699999999995, 178.27499999999998, 168.53949999999998, 145.83550000000002, 153.8715, 311.171, 145.804, 251.674, 145.047, 243.577, 72.29050000000001, 199.3775, 242.661, 127.87700000000001, 309.631, 240.19400000000002, 229.128, 218.353, 136.9175, 269.76099999999997, 130.774, 110.4055, 175.151, 148.06349999999998, 209.40699999999998, 161.80700000000002, 307.291, 222.188, 216.1115, 334.91499999999996, 254.2135, 113.6235},
 		[]float64{156.0205, 0.0415, 111.559, 92.54750000000001, 178.45999999999998, 94.917, 228.47699999999998, 114.411, 89.4975, 46.067, 12.794, 20.7785, 41.997, 21.011, 108.55850000000001, 26.418, 96.868, 108.9, 224.56900000000002, 54.7765, 109.709, 107.072, 126.7185, 106.013, 94.7895, 66.72149999999999, 128.64800000000002, 127.041, 247.488, 69.6495, 37.852, 20.8555, 95.911, 123.1635, 111.3335, 222.9315, 123.9325, 126.0155, 99.6315, 176.5025, 47.974, 8.2735, 51.241, 99.04599999999999, 37.0005, 222.9805, 254.4615, 115.331, 219.2595, 114.2315, 107.106, 142.084, 153.1975, 280.688, 260.59299999999996, 137.2095, 17.687, 240.373, 69.1935, 132.7125, 97.922, 81.06, 25.868000000000002, 23.109, 56.034499999999994, 27.806, 227.35, 51.626000000000005, 144.39100000000002, 96.028, 41.3095, 19.469, 36.269999999999996, 64.94, 113.762, 198.9345, 19.8365, 40.8895, 96.17699999999999, 16.054000000000002, 219.219, 18.4075, 125.658, 26.9875, 223.267, 252.35500000000002, 186.2425, 13.9515, 184.348, 147.30700000000002, 244.177, 166.5255, 39.234, 34.005, 37.571, 116.9545, 13.764, 256.8375, 188.1585, 80.012, 22.9645, 30.134, 205.908, 46.081500000000005, 22.352, 60.4985, 45.933, 31.249000000000002, 25.880499999999998, 111.665, 242.98000000000002, 104.9555, 115.96350000000001, 93.1435, 126.988, 87.3065, 98.23599999999999, 178.815, 121.15350000000001, 98.786, 21.162, 60.58, 119.0, 230.5745, 51.929500000000004, 263.2425, 15.492, 185.5235, 251.293, 74.89500000000001, 22.548499999999997, 17.2575, 100.071, 263.46349999999995, 97.51050000000001, 109.3785, 117.735, 90.3395, 142.04399999999998, 135.05450000000002, 90.3005, 97.3715, 99.445, 112.822, 148.99450000000002, 115.99799999999999, 125.50450000000001, 78.9855, 146.089, 115.3485, 121.07149999999999, 250.091, 105.8815, 112.83449999999999, 95.9295, 140.966, 93.744, 96.598, 95.6575, 14.765, 213.792, 92.28450000000001, 76.59549999999999, 152.17149999999998, 89.4675, 96.7475, 18.2125, 41.956, 287.475, 89.97149999999999, 102.6075, 17.333, 108.9365, 141.84449999999998, 111.719, 131.53449999999998, 217.692, 174.914, 133.05200000000002, 97.8965, 151.697, 22.723, 145.75, 11.8315, 22.111, 107.0155, 105.03999999999999, 89.3195, 100.0035, 181.5455, 103.54650000000001, 122.84700000000001, 216.822, 168.797, 27.5675},
