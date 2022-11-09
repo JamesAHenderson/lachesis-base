@@ -79,7 +79,7 @@ func TestQI(t *testing.T) {
 	// var latency mainNetLatency
 	// maxLatency := latency.initialise()
 
-	simulationDuration := 50000 // length of simulated time in milliseconds
+	simulationDuration := 100000 // length of simulated time in milliseconds
 	//Now run the simulation
 	simulate(weights, QIParentCount, randParentCount, offlineNodes, &latency, maxLatency, simulationDuration)
 
@@ -156,8 +156,12 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 			}
 		}
 	}
-
-	minEventCreationInterval := 11
+	minCheckInterval := 11 // min interval before re-checking if event can be created
+	prevCheckTime := make([]int, numValidators)
+	minEventCreationInterval := make([]int, numValidators) // minimum interval between creating event
+	for i, _ := range minEventCreationInterval {
+		minEventCreationInterval[i] = int(30 * float64(weights[0]) / float64(weights[i]))
+	}
 	// initial delay to avoid synchronous events
 	initialDelay := make([]int, numValidators)
 	for i := range initialDelay {
@@ -243,8 +247,9 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 
 		// Build events and check timing condition
 		for self := 0; self < numValidators; self++ {
-			passedTime := simTime - selfParent[self].creationTime // time since creating previous event
-			if passedTime >= minEventCreationInterval {
+			passedTime := simTime - prevCheckTime[self] // time since creating previous event
+			if passedTime >= minCheckInterval {
+				prevCheckTime[self] = simTime
 				// self is ready to try creating a new event
 				wg.Add(1)
 				go func(self int) { //parallel
@@ -333,38 +338,41 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 						copy(id[:], hasher.Sum(nil)[:24])
 						e.SetID(id)
 						hash.SetEventName(e.ID(), fmt.Sprintf("%03d%04d", self, e.Seq()))
+						e.creationTime = simTime
 
 						createRandEvent := randEvRNG[self].Float64() < randEvRate // used for introducing randomly created events
 						if online[selfID] == true {
 							// self is online
-							if createRandEvent || isLeaf[self] || quorumIndexers[self].DAGProgressEventTimingCondition(e.Parents(), online, simTime) {
-								//create an event if (i)a random event is created (ii) is a leaf event, or (iii) event timing condition is met
-								isLeaf[self] = false // only create one leaf event
-								//now start propagation of event to other nodes
-								delay := 1
-								for receiveNode := 0; receiveNode < numValidators; receiveNode++ {
-									if receiveNode == self {
-										delay = 1 // no delay to send to self (self will 'recieve' its own event after time increment at the top of the main loop)
-									} else {
-										delay = latency.latency(self, receiveNode, latencyRNG[self])
-										// check delay is within min and max bounds
-										if delay < 1 {
-											delay = 1
+							if simTime-selfParent[self].creationTime > minEventCreationInterval[self] {
+								if createRandEvent || isLeaf[self] || quorumIndexers[self].DAGProgressEventTimingCondition(e.Parents(), online, simTime) {
+									//create an event if (i)a random event is created (ii) is a leaf event, or (iii) event timing condition is met
+									isLeaf[self] = false // only create one leaf event
+									//now start propagation of event to other nodes
+									delay := 1
+									for receiveNode := 0; receiveNode < numValidators; receiveNode++ {
+										if receiveNode == self {
+											delay = 1 // no delay to send to self (self will 'recieve' its own event after time increment at the top of the main loop)
+										} else {
+											delay = latency.latency(self, receiveNode, latencyRNG[self])
+											// check delay is within min and max bounds
+											if delay < 1 {
+												delay = 1
+											}
+											if delay >= maxLatency {
+												delay = maxLatency - 1
+											}
 										}
-										if delay >= maxLatency {
-											delay = maxLatency - 1
-										}
+										receiveTime := (timeIdx + delay) % maxLatency // time index for the circular buffer
+										mutex.Lock()
+										eventPropagation[receiveTime][self][receiveNode] = append(eventPropagation[receiveTime][self][receiveNode], e) // add the event to the buffer
+										mutex.Unlock()
 									}
-									receiveTime := (timeIdx + delay) % maxLatency // time index for the circular buffer
-									mutex.Lock()
-									eventPropagation[receiveTime][self][receiveNode] = append(eventPropagation[receiveTime][self][receiveNode], e) // add the event to the buffer
-									mutex.Unlock()
+
+									eventsComplete[self]++ // increment count of events created for this node
+									selfParent[self] = *e  //update self parent to be this new event
 								}
 
-								eventsComplete[self]++ // increment count of events created for this node
-								selfParent[self] = *e  //update self parent to be this new event
 							}
-
 						}
 					}
 				}(self)
