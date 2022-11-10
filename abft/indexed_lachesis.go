@@ -22,13 +22,15 @@ var _ lachesis.Consensus = (*IndexedLachesis)(nil)
 // Use this structure if need a general-purpose consensus. Instead, use lower-level abft.Orderer.
 type IndexedLachesis struct {
 	*Lachesis
-	dagIndexer    DagIndexer
+	DagIndexer    DagIndexer
 	uniqueDirtyID uniqueID
 }
 
 type DagIndexer interface {
 	dagidx.VectorClock
 	dagidx.ForklessCause
+
+	GetEvent(hash.Event) dag.Event
 
 	Add(dag.Event) error
 	Flush()
@@ -41,7 +43,7 @@ type DagIndexer interface {
 func NewIndexedLachesis(store *Store, input EventSource, dagIndexer DagIndexer, crit func(error), config Config) *IndexedLachesis {
 	p := &IndexedLachesis{
 		Lachesis:      NewLachesis(store, input, dagIndexer, crit, config),
-		dagIndexer:    dagIndexer,
+		DagIndexer:    dagIndexer,
 		uniqueDirtyID: uniqueID{new(big.Int)},
 	}
 
@@ -53,8 +55,8 @@ func NewIndexedLachesis(store *Store, input EventSource, dagIndexer DagIndexer, 
 func (p *IndexedLachesis) Build(e dag.MutableEvent) error {
 	e.SetID(p.uniqueDirtyID.sample())
 
-	defer p.dagIndexer.DropNotFlushed()
-	err := p.dagIndexer.Add(e)
+	defer p.DagIndexer.DropNotFlushed()
+	err := p.DagIndexer.Add(e)
 	if err != nil {
 		return err
 	}
@@ -67,8 +69,8 @@ func (p *IndexedLachesis) Build(e dag.MutableEvent) error {
 // All the event checkers must be launched.
 // Process is not safe for concurrent use.
 func (p *IndexedLachesis) Process(e dag.Event) (err error) {
-	defer p.dagIndexer.DropNotFlushed()
-	err = p.dagIndexer.Add(e)
+	defer p.DagIndexer.DropNotFlushed()
+	err = p.DagIndexer.Add(e)
 	if err != nil {
 		return err
 	}
@@ -77,7 +79,7 @@ func (p *IndexedLachesis) Process(e dag.Event) (err error) {
 	if err != nil {
 		return err
 	}
-	p.dagIndexer.Flush()
+	p.DagIndexer.Flush()
 	return nil
 }
 
@@ -89,7 +91,7 @@ func (p *IndexedLachesis) Bootstrap(callback lachesis.ConsensusCallbacks) error 
 			if base.EpochDBLoaded != nil {
 				base.EpochDBLoaded(epoch)
 			}
-			p.dagIndexer.Reset(p.store.GetValidators(), p.store.epochTable.VectorIndex, p.input.GetEvent)
+			p.DagIndexer.Reset(p.Store.GetValidators(), p.Store.epochTable.VectorIndex, p.input.GetEvent)
 		},
 	}
 	return p.Lachesis.BootstrapWithOrderer(callback, ordererCallbacks)

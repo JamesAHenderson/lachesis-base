@@ -45,7 +45,7 @@ type QITestEvent struct {
 var mutex sync.Mutex // a mutex used for variables shared across go rountines
 
 func TestQI(t *testing.T) {
-	numNodes := 20
+	numNodes := 10
 	stakeDist := stakeCumDist()             // for stakes drawn from distribution
 	stakeRNG := rand.New(rand.NewSource(0)) // for stakes drawn from distribution
 
