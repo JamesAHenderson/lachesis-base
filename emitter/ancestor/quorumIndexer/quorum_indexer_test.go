@@ -45,7 +45,7 @@ type QITestEvent struct {
 var mutex sync.Mutex // a mutex used for variables shared across go rountines
 
 func TestQI(t *testing.T) {
-	numNodes := 10
+	numNodes := 20
 	stakeDist := stakeCumDist()             // for stakes drawn from distribution
 	stakeRNG := rand.New(rand.NewSource(0)) // for stakes drawn from distribution
 
@@ -80,12 +80,26 @@ func TestQI(t *testing.T) {
 	// maxLatency := latency.initialise()
 
 	simulationDuration := 100000 // length of simulated time in milliseconds
-	//Now run the simulation
-	simulate(weights, QIParentCount, randParentCount, offlineNodes, &latency, maxLatency, simulationDuration)
+
+	var sigmoid ancestor.Sigmoid
+	for threshold := 10.0; threshold < 200.0; threshold = threshold + 10.0 {
+		for slope := 0.1; slope <= 1.0; slope = slope + 0.1 {
+			for centre := 0.0; centre <= 1.0; centre = centre + 0.1 {
+				// slope := 0.1
+				// centre := 0.67
+				sigmoid.Centre = centre
+				sigmoid.Slope = slope
+
+				fmt.Println("Threshold: ", threshold, " Sigmoid Centre: ", centre, " Sigmoid Slope: ", slope)
+				//Now run the simulation
+				simulate(weights, QIParentCount, randParentCount, offlineNodes, &latency, maxLatency, simulationDuration, sigmoid, threshold)
+			}
+		}
+	}
 
 }
 
-func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offlineNodes bool, latency latency, maxLatency int, simulationDuration int) {
+func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offlineNodes bool, latency latency, maxLatency int, simulationDuration int, sigmoid ancestor.Sigmoid, threshold float64) {
 
 	numValidators := len(weights)
 
@@ -139,7 +153,7 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 		lch, _, input = abft.FakeLachesis(nodes, weights)
 		lchs[i] = *lch
 		inputs[i] = *input
-		quorumIndexers[i] = *ancestor.NewQuorumIndexer(validators, lch)
+		quorumIndexers[i] = *ancestor.NewQuorumIndexer(validators, lch, sigmoid, threshold)
 	}
 
 	// If requried set smallest non-quorum validators as offline for testing
@@ -160,7 +174,8 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 	prevCheckTime := make([]int, numValidators)
 	minEventCreationInterval := make([]int, numValidators) // minimum interval between creating event
 	for i, _ := range minEventCreationInterval {
-		minEventCreationInterval[i] = int(30 * float64(weights[0]) / float64(weights[i]))
+		// minEventCreationInterval[i] = int(30 * float64(weights[0]) / float64(weights[i]))
+		minEventCreationInterval[i] = 11
 	}
 	// initial delay to avoid synchronous events
 	initialDelay := make([]int, numValidators)
@@ -343,8 +358,9 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 						createRandEvent := randEvRNG[self].Float64() < randEvRate // used for introducing randomly created events
 						if online[selfID] == true {
 							// self is online
-							if simTime-selfParent[self].creationTime > minEventCreationInterval[self] {
-								if createRandEvent || isLeaf[self] || quorumIndexers[self].DAGProgressEventTimingCondition(e.Parents(), online, simTime) {
+							passedTime := simTime - selfParent[self].creationTime
+							if passedTime > minEventCreationInterval[self] {
+								if createRandEvent || isLeaf[self] || quorumIndexers[self].DAGProgressAndTimeIntervalEventTimingCondition(e.Parents(), online, passedTime) {
 									//create an event if (i)a random event is created (ii) is a leaf event, or (iii) event timing condition is met
 									isLeaf[self] = false // only create one leaf event
 									//now start propagation of event to other nodes
@@ -384,22 +400,22 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 
 	// print some useful output
 	fmt.Println("")
-	fmt.Println("Simulated time ", float64(simTime)/1000.0, " seconds")
-	fmt.Println("Number of nodes: ", numValidators)
+	// fmt.Println("Simulated time ", float64(simTime)/1000.0, " seconds")
+	// fmt.Println("Number of nodes: ", numValidators)
 	numOnlineNodes := 0
 	for _, isOnline := range online {
 		if isOnline {
 			numOnlineNodes++
 		}
 	}
-	fmt.Println("Number of nodes online: ", numOnlineNodes)
-	fmt.Println("Max Total Parents: ", QIParentCount+randParentCount, " Max QI Parents:", QIParentCount, " Max Random Parents", randParentCount)
+	// fmt.Println("Number of nodes online: ", numOnlineNodes)
+	// fmt.Println("Max Total Parents: ", QIParentCount+randParentCount, " Max QI Parents:", QIParentCount, " Max Random Parents", randParentCount)
 
 	// print number of events created by each node
 	var totalEventsComplete int = 0
-	for i, nEv := range eventsComplete {
+	for _, nEv := range eventsComplete {
 		totalEventsComplete += nEv
-		fmt.Println("Stake: ", weights[i], "event rate: ", float64(nEv)*1000/float64(simTime), " events/stake: ", float64(nEv)/float64(weights[i]))
+		// fmt.Println("Stake: ", weights[i], "event rate: ", float64(nEv)*1000/float64(simTime), " events/stake: ", float64(nEv)/float64(weights[i]))
 	}
 	var maxFrame idx.Frame = 0
 	for _, events := range headsAll {
@@ -411,11 +427,11 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 	}
 
 	fmt.Println("Max Frame: ", maxFrame)
-	fmt.Println("[Indicator of TTF] Frames per second: ", (1000.0*float64(maxFrame))/float64(simTime))
+	// fmt.Println("[Indicator of TTF] Frames per second: ", (1000.0*float64(maxFrame))/float64(simTime))
 	fmt.Println(" Number of Events: ", totalEventsComplete)
 
 	fmt.Println("Event rate per (online) node: ", float64(totalEventsComplete)/float64(numOnlineNodes)/(float64(simTime)/1000.0))
-	fmt.Println("[Indictor of gas efficiency] Average events per frame per (online) node: ", (float64(totalEventsComplete))/(float64(maxFrame)*float64(numOnlineNodes)))
+	// fmt.Println("[Indictor of gas efficiency] Average events per frame per (online) node: ", (float64(totalEventsComplete))/(float64(maxFrame)*float64(numOnlineNodes)))
 
 }
 
