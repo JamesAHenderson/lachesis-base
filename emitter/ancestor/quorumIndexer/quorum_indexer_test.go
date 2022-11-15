@@ -3,10 +3,14 @@ package quorumIndexer
 import (
 	"crypto/sha256"
 	"fmt"
+	"io"
+	"log"
 	"math/rand"
+	"os"
 	"sort"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Fantom-foundation/lachesis-base/abft"
 	"github.com/Fantom-foundation/lachesis-base/emitter/ancestor"
@@ -16,6 +20,11 @@ import (
 	"github.com/Fantom-foundation/lachesis-base/inter/idx"
 	"github.com/Fantom-foundation/lachesis-base/inter/pos"
 )
+
+type Results struct {
+	maxFrame  idx.Frame
+	numEvents int
+}
 
 type latency interface {
 	latency(sender int, reciever int, rng *rand.Rand) int
@@ -45,7 +54,7 @@ type QITestEvent struct {
 var mutex sync.Mutex // a mutex used for variables shared across go rountines
 
 func TestQI(t *testing.T) {
-	numNodes := 20
+	numNodes := 40
 	stakeDist := stakeCumDist()             // for stakes drawn from distribution
 	stakeRNG := rand.New(rand.NewSource(0)) // for stakes drawn from distribution
 
@@ -63,43 +72,142 @@ func TestQI(t *testing.T) {
 	// Uncomment the desired latency type
 
 	// Latencies between validators are drawn from a Normal Gaussian distribution
-	var latency gaussianLatency
-	latency.mean = 100 // mean latency in milliseconds
-	latency.std = 10   // standard deviation of latency in milliseconds
-	maxLatency := int(latency.mean + 4*latency.std)
+	// var latency gaussianLatency
+	// latency.mean = 100 // mean latency in milliseconds
+	// latency.std = 10   // standard deviation of latency in milliseconds
+	// maxLatency := int(latency.mean + 4*latency.std)
 
 	// Latencies between validators are modelled using a dataset of real world internet latencies between cities
-	// var latency cityLatency
-	// var seed int64
-	// seed = 0 //use this for the same seed each time the simulator runs
-	// // seed = time.Now().UnixNano() //use this for a different seed each time the simulator runs
-	// maxLatency := latency.initialise(numNodes, seed)
+	var latency cityLatency
+	var seed int64
+	seed = 0 //use this for the same seed each time the simulator runs
+	// seed = time.Now().UnixNano() //use this for a different seed each time the simulator runs
+	maxLatency := latency.initialise(numNodes, seed)
 
 	// Latencies between validators are drawn from a dataset of latencies observed by one Fantom main net validator. Note all pairs of validators will use the same distribution
 	// var latency mainNetLatency
 	// maxLatency := latency.initialise()
 
-	simulationDuration := 100000 // length of simulated time in milliseconds
-
+	simulationDuration := 1000 // length of simulated time in milliseconds
+	thresholds := make([]float64, 0)
+	for thresh := 0.0; thresh <= 1000.0; thresh = thresh + 50.0 {
+		thresholds = append(thresholds, thresh)
+	}
+	slopes := make([]float64, 0)
+	for s := 0.0; s <= 0.1; s = s + 0.01 {
+		slopes = append(slopes, s)
+	}
+	results := make([][]Results, len(thresholds))
+	for i, _ := range results {
+		results[i] = make([]Results, len(slopes))
+	}
 	var sigmoid ancestor.Sigmoid
-	for threshold := 10.0; threshold < 200.0; threshold = threshold + 10.0 {
-		for slope := 0.1; slope <= 1.0; slope = slope + 0.1 {
-			for centre := 0.0; centre <= 1.0; centre = centre + 0.1 {
-				// slope := 0.1
-				// centre := 0.67
-				sigmoid.Centre = centre
-				sigmoid.Slope = slope
+	for ti, threshold := range thresholds {
+		for si, slope := range slopes {
+			// for centre := 0.0; centre <= 1.0; centre = centre + 0.1 {
+			// slope := 0.1
+			centre := 0.67
+			sigmoid.Centre = centre
+			sigmoid.Slope = slope
 
-				fmt.Println("Threshold: ", threshold, " Sigmoid Centre: ", centre, " Sigmoid Slope: ", slope)
-				//Now run the simulation
-				simulate(weights, QIParentCount, randParentCount, offlineNodes, &latency, maxLatency, simulationDuration, sigmoid, threshold)
-			}
+			fmt.Println("Threshold: ", threshold, " Sigmoid Centre: ", centre, " Sigmoid Slope: ", slope)
+			//Now run the simulation
+			results[ti][si] = simulate(weights, QIParentCount, randParentCount, offlineNodes, &latency, maxLatency, simulationDuration, sigmoid, threshold)
+			// }
 		}
 	}
 
+	// Print Results
+	currenTime := time.Now()
+	fileName := "../../../../SimulationResults "
+	fileName += currenTime.String()
+	fileName += ".txt"
+	file, err := os.Create(fileName)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer file.Close()
+	mw := io.MultiWriter(os.Stdout, file)
+
+	fmt.Fprint(mw, "maxFrame=np.array([")
+	for ti, tResult := range results {
+		fmt.Fprint(mw, "[")
+		for si, result := range tResult {
+			if si < len(tResult)-1 {
+				fmt.Fprint(mw, result.maxFrame, ",")
+			} else {
+				fmt.Fprint(mw, result.maxFrame)
+			}
+		}
+		if ti < len(results)-1 {
+			fmt.Fprintln(mw, "],")
+		} else {
+			fmt.Fprint(mw, "]")
+		}
+	}
+	fmt.Fprintln(mw, "])")
+	fmt.Fprintln(mw, "")
+
+	fmt.Fprint(mw, "numEvents=np.array([")
+	for ti, tResult := range results {
+		fmt.Fprint(mw, "[")
+		for si, result := range tResult {
+			if si < len(tResult)-1 {
+				fmt.Fprint(mw, result.numEvents, ",")
+			} else {
+				fmt.Fprint(mw, result.numEvents)
+			}
+		}
+		if ti < len(results)-1 {
+			fmt.Fprintln(mw, "],")
+		} else {
+			fmt.Fprint(mw, "]")
+		}
+	}
+	fmt.Fprintln(mw, "])")
+	fmt.Fprintln(mw, "")
+
+	fmt.Fprint(mw, "thresholds=np.array([")
+	for ti, tResult := range results {
+		fmt.Fprint(mw, "[")
+		for si, _ := range tResult {
+			if si < len(tResult)-1 {
+				fmt.Fprint(mw, thresholds[ti], ",")
+			} else {
+				fmt.Fprint(mw, thresholds[ti])
+			}
+		}
+		if ti < len(results)-1 {
+			fmt.Fprintln(mw, "],")
+		} else {
+			fmt.Fprint(mw, "]")
+		}
+	}
+	fmt.Fprintln(mw, "])")
+	fmt.Fprintln(mw, "")
+
+	fmt.Fprint(mw, "slopes=np.array([")
+	for ti, tResult := range results {
+		fmt.Fprint(mw, "[")
+		for si, _ := range tResult {
+			if si < len(tResult)-1 {
+				fmt.Fprint(mw, slopes[si], ",")
+			} else {
+				fmt.Fprint(mw, slopes[si])
+			}
+		}
+		if ti < len(results)-1 {
+			fmt.Fprintln(mw, "],")
+		} else {
+			fmt.Fprint(mw, "]")
+		}
+	}
+	fmt.Fprintln(mw, "])")
+	fmt.Fprintln(mw, "")
+
 }
 
-func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offlineNodes bool, latency latency, maxLatency int, simulationDuration int, sigmoid ancestor.Sigmoid, threshold float64) {
+func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offlineNodes bool, latency latency, maxLatency int, simulationDuration int, sigmoid ancestor.Sigmoid, threshold float64) Results {
 
 	numValidators := len(weights)
 
@@ -432,6 +540,11 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 
 	fmt.Println("Event rate per (online) node: ", float64(totalEventsComplete)/float64(numOnlineNodes)/(float64(simTime)/1000.0))
 	// fmt.Println("[Indictor of gas efficiency] Average events per frame per (online) node: ", (float64(totalEventsComplete))/(float64(maxFrame)*float64(numOnlineNodes)))
+
+	var results Results
+	results.maxFrame = maxFrame
+	results.numEvents = totalEventsComplete
+	return results
 
 }
 
