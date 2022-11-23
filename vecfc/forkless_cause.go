@@ -99,7 +99,7 @@ func (vi *Index) ForklessCauseProgress(aID, bID hash.Event, candidateParents, ch
 	for i, _ := range candidateParentsFCProgress {
 		candidateParentsFCProgress[i] = vi.validators.NewCounter() // initialise the counter for each candidate parent
 	}
-	chosenParentsFCProgress := vi.validators.NewCounter() // initialise the counter for each chosen parents only
+	chosenParentsFCProgress := vi.validators.NewCounter() // initialise the counter for chosen parents only
 
 	// Get events by hash
 	aHB := vi.GetHighestBefore(aID)

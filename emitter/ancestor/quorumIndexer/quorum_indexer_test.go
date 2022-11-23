@@ -54,7 +54,7 @@ type QITestEvent struct {
 var mutex sync.Mutex // a mutex used for variables shared across go rountines
 
 func TestQI(t *testing.T) {
-	numNodes := 40
+	numNodes := 20
 	stakeDist := stakeCumDist()             // for stakes drawn from distribution
 	stakeRNG := rand.New(rand.NewSource(0)) // for stakes drawn from distribution
 
@@ -72,23 +72,23 @@ func TestQI(t *testing.T) {
 	// Uncomment the desired latency type
 
 	// Latencies between validators are drawn from a Normal Gaussian distribution
-	// var latency gaussianLatency
-	// latency.mean = 100 // mean latency in milliseconds
-	// latency.std = 10   // standard deviation of latency in milliseconds
-	// maxLatency := int(latency.mean + 4*latency.std)
+	var latency gaussianLatency
+	latency.mean = 100 // mean latency in milliseconds
+	latency.std = 10   // standard deviation of latency in milliseconds
+	maxLatency := int(latency.mean + 4*latency.std)
 
 	// Latencies between validators are modelled using a dataset of real world internet latencies between cities
-	var latency cityLatency
-	var seed int64
-	seed = 0 //use this for the same seed each time the simulator runs
-	// seed = time.Now().UnixNano() //use this for a different seed each time the simulator runs
-	maxLatency := latency.initialise(numNodes, seed)
+	// var latency cityLatency
+	// var seed int64
+	// seed = 0 //use this for the same seed each time the simulator runs
+	// // seed = time.Now().UnixNano() //use this for a different seed each time the simulator runs
+	// maxLatency := latency.initialise(numNodes, seed)
 
 	// Latencies between validators are drawn from a dataset of latencies observed by one Fantom main net validator. Note all pairs of validators will use the same distribution
 	// var latency mainNetLatency
 	// maxLatency := latency.initialise()
 
-	simulationDuration := 1000 // length of simulated time in milliseconds
+	simulationDuration := 100000 // length of simulated time in milliseconds
 	thresholds := make([]float64, 0)
 	for thresh := 0.0; thresh <= 1000.0; thresh = thresh + 50.0 {
 		thresholds = append(thresholds, thresh)
@@ -468,7 +468,7 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 							// self is online
 							passedTime := simTime - selfParent[self].creationTime
 							if passedTime > minEventCreationInterval[self] {
-								if createRandEvent || isLeaf[self] || quorumIndexers[self].DAGProgressAndTimeIntervalEventTimingCondition(e.Parents(), online, passedTime) {
+								if createRandEvent || isLeaf[self] || quorumIndexers[self].DAGProgressEventTimingCondition(e.Parents(), online, passedTime) {
 									//create an event if (i)a random event is created (ii) is a leaf event, or (iii) event timing condition is met
 									isLeaf[self] = false // only create one leaf event
 									//now start propagation of event to other nodes

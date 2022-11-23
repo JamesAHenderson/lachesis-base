@@ -14,6 +14,12 @@ import (
 	"github.com/Fantom-foundation/lachesis-base/inter/pos"
 )
 
+type sortedKIdx []KIdx
+type KIdx struct {
+	K    float64
+	Root election.RootAndSlot
+}
+
 type Sigmoid struct {
 	Centre float64
 	Slope  float64
@@ -32,7 +38,8 @@ type sortedRootProgressMetrics []RootProgressMetrics
 type RootProgressMetrics struct {
 	idx   int
 	stake pos.Weight
-	k     float64
+	k     int
+	khat  float64
 }
 
 type validatorHighestEvent struct {
@@ -133,6 +140,7 @@ func (h *QuorumIndexer) ProcessEvent(event dag.Event, selfEvent bool, time int) 
 
 func (h *QuorumIndexer) Choose(chosenParents hash.Events, candidateParents hash.Events) int {
 	metrics := h.GetMetricsOfRootProgress(candidateParents, chosenParents) // metric for each candidate parent
+
 	if metrics == nil {
 		// this occurs if all candidate parents are at a previous frame, and thus cannot progress the production of a root in the current frame
 		// in this case return a random candidate parent
@@ -141,7 +149,62 @@ func (h *QuorumIndexer) Choose(chosenParents hash.Events, candidateParents hash.
 	// now sort options based on metrics in order of importance
 	sort.Sort(sortedRootProgressMetrics(metrics))
 
+	// now create list of candidates that have equal highest khat metric
+	var bestCandidates hash.Events
+	var bestMetrics []RootProgressMetrics
+	maxMetric := metrics[0].khat
+	for _, metric := range metrics {
+		if metric.khat == maxMetric {
+			bestCandidates = append(bestCandidates, candidateParents[metric.idx])
+			bestMetrics = append(bestMetrics, metric)
+		} else {
+			break
+		}
+	}
+	if len(bestCandidates) > 1 {
+		// To choose from the list of highest khat metric canidates, sort them by all root knowledge metric, k
+		metrics = h.GetMetricsOfRootKnowledge(bestCandidates, chosenParents, bestMetrics)
+		sort.Sort(sortedRootProgressMetrics(metrics))
+	}
 	return metrics[0].idx
+}
+
+func (h *QuorumIndexer) GetMetricsOfRootKnowledge(candidateParents hash.Events, chosenParents hash.Events, metrics []RootProgressMetrics) []RootProgressMetrics {
+	// This function is indended to be used in the process of
+	// selecting parents from a set of candidate parents.
+	// Candidate parents are assumed to be in the highest frame
+	// This function returns a metric of root knowledge for assessing
+	// the incremental increase in root knowledge when using each candidate head as a parent.
+	// chosenParents are parents that have already been selected
+
+	// find the maximum frame number of all parents
+	maxFrame := h.dagi.GetEvent(h.SelfParentEvent).Frame()
+	candidateParentFrame := make([]idx.Frame, len(candidateParents))
+
+	for i, head := range candidateParents {
+		candidateParentFrame[i] = h.dagi.GetEvent(head).Frame()
+		if candidateParentFrame[i] > maxFrame {
+			maxFrame = candidateParentFrame[i]
+		}
+	}
+
+	for _, parent := range chosenParents {
+		if h.dagi.GetEvent(parent).Frame() > maxFrame {
+			maxFrame = h.dagi.GetEvent(parent).Frame()
+		}
+	}
+
+	// create a slice containing all chosen parents, and a candidate parent
+	parents := make([]hash.Event, len(chosenParents)+1)
+	for j, head := range chosenParents {
+		parents[j] = head
+	}
+	for i, candidateParent := range candidateParents {
+		parents[len(parents)-1] = candidateParent
+		metrics[i].k = h.RootKnowledgeByCount(maxFrame, h.SelfParentEvent, parents)
+	}
+
+	return metrics
 }
 
 func (h *QuorumIndexer) GetMetricsOfRootProgress(candidateParents hash.Events, chosenParents hash.Events) []RootProgressMetrics {
@@ -174,7 +237,7 @@ func (h *QuorumIndexer) GetMetricsOfRootProgress(candidateParents hash.Events, c
 	// (parents that haven't reached maxFrame cannot provide extra progress)
 	var maxFrameParents hash.Events
 	var tempMetric RootProgressMetrics
-	tempMetric.k = 0
+	tempMetric.khat = 0
 	for i, parent := range candidateParents {
 		if candidateParentFrame[i] >= maxFrame {
 			tempMetric.idx = i
@@ -189,7 +252,7 @@ func (h *QuorumIndexer) GetMetricsOfRootProgress(candidateParents hash.Events, c
 	}
 	for i, candidateParent := range maxFrameParents {
 		parents[len(parents)-1] = candidateParent
-		rootProgressMetrics[i].k = h.progressTowardNewRoot(maxFrame, h.SelfParentEvent, parents)
+		rootProgressMetrics[i].khat = h.progressTowardNewRoot(maxFrame, h.SelfParentEvent, parents)
 
 		candidateParentIdx := h.validators.GetIdx(h.dagi.GetEvent(candidateParent).Creator())
 		rootProgressMetrics[i].stake = h.validators.GetWeightByIdx(candidateParentIdx)
@@ -327,11 +390,74 @@ func (m sortedRootProgressMetrics) Swap(i, j int) {
 }
 
 func (m sortedRootProgressMetrics) Less(i, j int) bool {
-	if m[i].k != m[j].k {
-		return m[i].k > m[j].k
+	if m[i].khat != m[j].khat {
+		return m[i].khat > m[j].khat
 	} else {
-		return m[i].stake > m[j].stake
+		if m[i].k != m[j].k {
+			return m[i].k > m[j].k
+		} else {
+			return m[i].stake > m[j].stake
+		}
 	}
+}
+
+func (h *QuorumIndexer) RootKnowledgeByStake(frame idx.Frame, event hash.Event, chosenHeads hash.Events) float64 {
+	roots := h.store.GetFrameRoots(frame)
+	Q := float64(h.validators.Quorum())
+	D := (Q * Q)
+
+	// calculate k for event under consideration
+
+	RootKnowledge := make([]KIdx, len(roots))
+	for i, root := range roots {
+		rootValidatorIdx := h.validators.GetIdx(root.Slot.Validator)
+		rootStake := h.validators.GetWeightByIdx(rootValidatorIdx)
+		FCProgress, _ := h.dagi.ForklessCauseProgress(event, root.ID, nil, chosenHeads) //compute for new event
+		if FCProgress.Sum() <= h.validators.Quorum() {
+			RootKnowledge[i].K = float64(rootStake) * float64(FCProgress.Sum())
+			// RootKnowledge[i].K = float64(FCProgress[0].Sum())
+		} else {
+			RootKnowledge[i].K = float64(rootStake) * float64(h.validators.Quorum())
+			// RootKnowledge[i].K = float64(h.Validators.Quorum())
+		}
+		RootKnowledge[i].Root = root
+
+	}
+
+	sort.Sort(sortedKIdx(RootKnowledge))
+	var kNew float64 = 0
+
+	var bestRootsStake pos.Weight = 0
+	for _, kidx := range RootKnowledge {
+		rootValidatorIdx := h.validators.GetIdx(kidx.Root.Slot.Validator)
+		rootStake := h.validators.GetWeightByIdx(rootValidatorIdx)
+		if bestRootsStake >= h.validators.Quorum() {
+			break
+		} else if bestRootsStake+rootStake <= h.validators.Quorum() {
+			// kNew += float64(kidx.K) * float64(rootStake)
+			kNew += float64(kidx.K)
+			bestRootsStake += rootStake
+		} else {
+			partialStake := h.validators.Quorum() - bestRootsStake
+			kNew += float64(kidx.K) * float64(partialStake) / float64(rootStake)
+			bestRootsStake = h.validators.Quorum() // this will trigger the break condition above
+		}
+	}
+	kNew = kNew / D
+
+	return kNew
+}
+
+func (m sortedKIdx) Len() int {
+	return len(m)
+}
+
+func (m sortedKIdx) Swap(i, j int) {
+	m[i], m[j] = m[j], m[i]
+}
+
+func (m sortedKIdx) Less(i, j int) bool {
+	return m[i].K > m[j].K
 }
 
 func (h *QuorumIndexer) RootKnowledgeByCount(frame idx.Frame, event hash.Event, chosenHeads hash.Events) int {
@@ -676,8 +802,8 @@ func (h *QuorumIndexer) testingThreshold(online map[idx.ValidatorID]bool) float6
 
 func (h *QuorumIndexer) sigmoidFn(metric float64) float64 {
 	fMetric := float64(metric) / float64(h.validators.TotalWeight())
-	centre := h.sigmoid.Centre
-	// centre := float64(h.validators.Quorum()) / float64(h.validators.TotalWeight())
+	//centre := h.sigmoid.Centre
+	centre := float64(h.validators.Quorum()) / float64(h.validators.TotalWeight())
 	return 1.0 / (1.0 + math.Exp(-(fMetric-centre)/h.sigmoid.Slope))
 }
 func (h *QuorumIndexer) DAGProgressAndTimeIntervalEventTimingCondition(chosenHeads hash.Events, online map[idx.ValidatorID]bool, passedTime int) bool {
@@ -743,6 +869,9 @@ func (h *QuorumIndexer) DAGProgressEventTimingCondition(chosenHeads hash.Events,
 	kPrev := h.RootKnowledgeByCount(selfFrame, h.SelfParentEvent, nil)        // calculate metric of root knowledge for previous self event
 	kNew := h.RootKnowledgeByCount(selfFrame, h.SelfParentEvent, chosenHeads) // calculate metric of root knowledge for new event under consideration
 
+	// kPrev := h.RootKnowledgeByStake(selfFrame, h.SelfParentEvent, nil)        // calculate metric of root knowledge for previous self event
+	// kNew := h.RootKnowledgeByStake(selfFrame, h.SelfParentEvent, chosenHeads) // calculate metric of root knowledge for new event under consideration
+
 	if kNew > kPrev { // this condition prevents the function always returning true when less than quorum nodes are online, and no DAG progress can be made
 		for _, e := range h.eventTiming.validatorHighestEvents {
 			if e.event != nil {
@@ -762,6 +891,7 @@ func (h *QuorumIndexer) DAGProgressEventTimingCondition(chosenHeads hash.Events,
 				// 	break
 				case eFrame == selfFrame:
 					k := h.RootKnowledgeByCount(selfFrame, e.event.ID(), nil)
+					// k := h.RootKnowledgeByStake(selfFrame, e.event.ID(), nil)
 					if k >= kPrev {
 						kGreaterCount++
 						kGreaterStake.Count(e.event.Creator())
@@ -773,7 +903,8 @@ func (h *QuorumIndexer) DAGProgressEventTimingCondition(chosenHeads hash.Events,
 		// if kGreaterCount >= h.Threshold() {
 		// 	return true // self should create a new event
 		// }
-		if uint32(kGreaterStake.Sum()) >= h.stakeThreshold() {
+		// if uint32(kGreaterStake.Sum()) >= h.stakeThreshold() {
+		if kGreaterStake.Sum() >= h.validators.Quorum() {
 			return true // self should create a new event
 		}
 	}
