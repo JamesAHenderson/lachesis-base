@@ -7,6 +7,7 @@ import (
 	"github.com/Fantom-foundation/lachesis-base/inter/idx"
 	"github.com/Fantom-foundation/lachesis-base/inter/pos"
 	"github.com/Fantom-foundation/lachesis-base/lachesis"
+	"github.com/Fantom-foundation/lachesis-base/vecfc"
 )
 
 var _ lachesis.Consensus = (*Lachesis)(nil)
@@ -15,6 +16,7 @@ type DagIndex interface {
 	dagidx.VectorClock
 	dagidx.ForklessCause
 	GetEvent(hash.Event) dag.Event
+	GetLowestAfter(hash.Event) *vecfc.LowestAfterSeq
 }
 
 // Lachesis performs events ordering and detects cheaters

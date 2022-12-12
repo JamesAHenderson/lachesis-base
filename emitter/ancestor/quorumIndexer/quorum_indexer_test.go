@@ -3,14 +3,10 @@ package quorumIndexer
 import (
 	"crypto/sha256"
 	"fmt"
-	"io"
-	"log"
 	"math/rand"
-	"os"
 	"sort"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/Fantom-foundation/lachesis-base/abft"
 	"github.com/Fantom-foundation/lachesis-base/emitter/ancestor"
@@ -74,7 +70,7 @@ func TestQI(t *testing.T) {
 	// Latencies between validators are drawn from a Normal Gaussian distribution
 	var latency gaussianLatency
 	latency.mean = 100 // mean latency in milliseconds
-	latency.std = 10   // standard deviation of latency in milliseconds
+	latency.std = 0    // standard deviation of latency in milliseconds
 	maxLatency := int(latency.mean + 4*latency.std)
 
 	// Latencies between validators are modelled using a dataset of real world internet latencies between cities
@@ -89,125 +85,125 @@ func TestQI(t *testing.T) {
 	// maxLatency := latency.initialise()
 
 	simulationDuration := 100000 // length of simulated time in milliseconds
-	thresholds := make([]float64, 0)
-	for thresh := 0.0; thresh <= 1000.0; thresh = thresh + 50.0 {
-		thresholds = append(thresholds, thresh)
-	}
-	slopes := make([]float64, 0)
-	for s := 0.0; s <= 0.1; s = s + 0.01 {
-		slopes = append(slopes, s)
-	}
-	results := make([][]Results, len(thresholds))
-	for i, _ := range results {
-		results[i] = make([]Results, len(slopes))
-	}
-	var sigmoid ancestor.Sigmoid
-	for ti, threshold := range thresholds {
-		for si, slope := range slopes {
-			// for centre := 0.0; centre <= 1.0; centre = centre + 0.1 {
-			// slope := 0.1
-			centre := 0.67
-			sigmoid.Centre = centre
-			sigmoid.Slope = slope
+	// thresholds := make([]float64, 0)
+	// for thresh := 0.0; thresh <= 1000.0; thresh = thresh + 50.0 {
+	// 	thresholds = append(thresholds, thresh)
+	// }
+	// slopes := make([]float64, 0)
+	// for s := 0.0; s <= 0.1; s = s + 0.01 {
+	// 	slopes = append(slopes, s)
+	// }
+	// results := make([][]Results, len(thresholds))
+	// for i, _ := range results {
+	// 	results[i] = make([]Results, len(slopes))
+	// }
+	// var sigmoid ancestor.Sigmoid
+	// for ti, threshold := range thresholds {
+	// 	for si, slope := range slopes {
+	// 		// for centre := 0.0; centre <= 1.0; centre = centre + 0.1 {
+	// 		// slope := 0.1
+	// 		centre := 0.67
+	// 		sigmoid.Centre = centre
+	// 		sigmoid.Slope = slope
 
-			fmt.Println("Threshold: ", threshold, " Sigmoid Centre: ", centre, " Sigmoid Slope: ", slope)
-			//Now run the simulation
-			results[ti][si] = simulate(weights, QIParentCount, randParentCount, offlineNodes, &latency, maxLatency, simulationDuration, sigmoid, threshold)
-			// }
-		}
-	}
-
+	// 		fmt.Println("Threshold: ", threshold, " Sigmoid Centre: ", centre, " Sigmoid Slope: ", slope)
+	// 		//Now run the simulation
+	// 		results[ti][si] = simulate(weights, QIParentCount, randParentCount, offlineNodes, &latency, maxLatency, simulationDuration, sigmoid, threshold)
+	// 		// }
+	// 	}
+	// }
+	simulate(weights, QIParentCount, randParentCount, offlineNodes, &latency, maxLatency, simulationDuration)
 	// Print Results
-	currenTime := time.Now()
-	fileName := "../../../../SimulationResults "
-	fileName += currenTime.String()
-	fileName += ".txt"
-	file, err := os.Create(fileName)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer file.Close()
-	mw := io.MultiWriter(os.Stdout, file)
+	// currenTime := time.Now()
+	// fileName := "../../../../SimulationResults "
+	// fileName += currenTime.String()
+	// fileName += ".txt"
+	// file, err := os.Create(fileName)
+	// if err != nil {
+	// 	log.Fatal(err)
+	// }
+	// defer file.Close()
+	// mw := io.MultiWriter(os.Stdout, file)
 
-	fmt.Fprint(mw, "maxFrame=np.array([")
-	for ti, tResult := range results {
-		fmt.Fprint(mw, "[")
-		for si, result := range tResult {
-			if si < len(tResult)-1 {
-				fmt.Fprint(mw, result.maxFrame, ",")
-			} else {
-				fmt.Fprint(mw, result.maxFrame)
-			}
-		}
-		if ti < len(results)-1 {
-			fmt.Fprintln(mw, "],")
-		} else {
-			fmt.Fprint(mw, "]")
-		}
-	}
-	fmt.Fprintln(mw, "])")
-	fmt.Fprintln(mw, "")
+	// fmt.Fprint(mw, "maxFrame=np.array([")
+	// for ti, tResult := range results {
+	// 	fmt.Fprint(mw, "[")
+	// 	for si, result := range tResult {
+	// 		if si < len(tResult)-1 {
+	// 			fmt.Fprint(mw, result.maxFrame, ",")
+	// 		} else {
+	// 			fmt.Fprint(mw, result.maxFrame)
+	// 		}
+	// 	}
+	// 	if ti < len(results)-1 {
+	// 		fmt.Fprintln(mw, "],")
+	// 	} else {
+	// 		fmt.Fprint(mw, "]")
+	// 	}
+	// }
+	// fmt.Fprintln(mw, "])")
+	// fmt.Fprintln(mw, "")
 
-	fmt.Fprint(mw, "numEvents=np.array([")
-	for ti, tResult := range results {
-		fmt.Fprint(mw, "[")
-		for si, result := range tResult {
-			if si < len(tResult)-1 {
-				fmt.Fprint(mw, result.numEvents, ",")
-			} else {
-				fmt.Fprint(mw, result.numEvents)
-			}
-		}
-		if ti < len(results)-1 {
-			fmt.Fprintln(mw, "],")
-		} else {
-			fmt.Fprint(mw, "]")
-		}
-	}
-	fmt.Fprintln(mw, "])")
-	fmt.Fprintln(mw, "")
+	// fmt.Fprint(mw, "numEvents=np.array([")
+	// for ti, tResult := range results {
+	// 	fmt.Fprint(mw, "[")
+	// 	for si, result := range tResult {
+	// 		if si < len(tResult)-1 {
+	// 			fmt.Fprint(mw, result.numEvents, ",")
+	// 		} else {
+	// 			fmt.Fprint(mw, result.numEvents)
+	// 		}
+	// 	}
+	// 	if ti < len(results)-1 {
+	// 		fmt.Fprintln(mw, "],")
+	// 	} else {
+	// 		fmt.Fprint(mw, "]")
+	// 	}
+	// }
+	// fmt.Fprintln(mw, "])")
+	// fmt.Fprintln(mw, "")
 
-	fmt.Fprint(mw, "thresholds=np.array([")
-	for ti, tResult := range results {
-		fmt.Fprint(mw, "[")
-		for si, _ := range tResult {
-			if si < len(tResult)-1 {
-				fmt.Fprint(mw, thresholds[ti], ",")
-			} else {
-				fmt.Fprint(mw, thresholds[ti])
-			}
-		}
-		if ti < len(results)-1 {
-			fmt.Fprintln(mw, "],")
-		} else {
-			fmt.Fprint(mw, "]")
-		}
-	}
-	fmt.Fprintln(mw, "])")
-	fmt.Fprintln(mw, "")
+	// fmt.Fprint(mw, "thresholds=np.array([")
+	// for ti, tResult := range results {
+	// 	fmt.Fprint(mw, "[")
+	// 	for si, _ := range tResult {
+	// 		if si < len(tResult)-1 {
+	// 			fmt.Fprint(mw, thresholds[ti], ",")
+	// 		} else {
+	// 			fmt.Fprint(mw, thresholds[ti])
+	// 		}
+	// 	}
+	// 	if ti < len(results)-1 {
+	// 		fmt.Fprintln(mw, "],")
+	// 	} else {
+	// 		fmt.Fprint(mw, "]")
+	// 	}
+	// }
+	// fmt.Fprintln(mw, "])")
+	// fmt.Fprintln(mw, "")
 
-	fmt.Fprint(mw, "slopes=np.array([")
-	for ti, tResult := range results {
-		fmt.Fprint(mw, "[")
-		for si, _ := range tResult {
-			if si < len(tResult)-1 {
-				fmt.Fprint(mw, slopes[si], ",")
-			} else {
-				fmt.Fprint(mw, slopes[si])
-			}
-		}
-		if ti < len(results)-1 {
-			fmt.Fprintln(mw, "],")
-		} else {
-			fmt.Fprint(mw, "]")
-		}
-	}
-	fmt.Fprintln(mw, "])")
-	fmt.Fprintln(mw, "")
+	// fmt.Fprint(mw, "slopes=np.array([")
+	// for ti, tResult := range results {
+	// 	fmt.Fprint(mw, "[")
+	// 	for si, _ := range tResult {
+	// 		if si < len(tResult)-1 {
+	// 			fmt.Fprint(mw, slopes[si], ",")
+	// 		} else {
+	// 			fmt.Fprint(mw, slopes[si])
+	// 		}
+	// 	}
+	// 	if ti < len(results)-1 {
+	// 		fmt.Fprintln(mw, "],")
+	// 	} else {
+	// 		fmt.Fprint(mw, "]")
+	// 	}
+	// }
+	// fmt.Fprintln(mw, "])")
+	// fmt.Fprintln(mw, "")
 
 }
 
-func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offlineNodes bool, latency latency, maxLatency int, simulationDuration int, sigmoid ancestor.Sigmoid, threshold float64) Results {
+func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offlineNodes bool, latency latency, maxLatency int, simulationDuration int) Results {
 
 	numValidators := len(weights)
 
@@ -261,7 +257,8 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 		lch, _, input = abft.FakeLachesis(nodes, weights)
 		lchs[i] = *lch
 		inputs[i] = *input
-		quorumIndexers[i] = *ancestor.NewQuorumIndexer(validators, lch, sigmoid, threshold)
+		// quorumIndexers[i] = *ancestor.NewQuorumIndexer(validators, lch, sigmoid, threshold)
+		quorumIndexers[i] = *ancestor.NewQuorumIndexer(validators, lch)
 	}
 
 	// If requried set smallest non-quorum validators as offline for testing
@@ -282,8 +279,11 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 	prevCheckTime := make([]int, numValidators)
 	minEventCreationInterval := make([]int, numValidators) // minimum interval between creating event
 	for i, _ := range minEventCreationInterval {
-		// minEventCreationInterval[i] = int(30 * float64(weights[0]) / float64(weights[i]))
+		// minEventCreationInterval[i] = int(11 * float64(weights[0]) / float64(weights[i]))
 		minEventCreationInterval[i] = 11
+		if i == 2 {
+			minEventCreationInterval[i] = 1000 //rand.Intn(10000)
+		}
 	}
 	// initial delay to avoid synchronous events
 	initialDelay := make([]int, numValidators)
@@ -300,6 +300,8 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 	for node := range isLeaf {
 		isLeaf[node] = true
 	}
+
+	kEvents := make([][]int, numValidators) // store k for each event for later analysis
 
 	selfParent := make([]QITestEvent, numValidators)
 
@@ -351,7 +353,9 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 					}
 					if process[i] {
 						// buffered event has all parents in the DAG and can now be processed
+						// mutex.Lock()
 						processEvent(inputs[receiveNode], &lchs[receiveNode], buffEvent, &quorumIndexers[receiveNode], &headsAll[receiveNode], nodes[receiveNode], simTime)
+						// mutex.Unlock()
 					}
 				}
 				//remove processed events from buffer
@@ -468,7 +472,15 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 							// self is online
 							passedTime := simTime - selfParent[self].creationTime
 							if passedTime > minEventCreationInterval[self] {
-								if createRandEvent || isLeaf[self] || quorumIndexers[self].DAGProgressEventTimingCondition(e.Parents(), online, passedTime) {
+								eTiming := false
+								kNew := 0
+								if !isLeaf[self] {
+									eTiming, kNew = quorumIndexers[self].DAGProgressEventTimingCondition(e.Parents(), online, passedTime)
+								}
+								if createRandEvent || isLeaf[self] || eTiming {
+									// mutex.Lock()
+									// fmt.Println(self, ": StakeAbove: ", quorumIndexers[self].RankSelfPerformance())
+									// mutex.Unlock()
 									//create an event if (i)a random event is created (ii) is a leaf event, or (iii) event timing condition is met
 									isLeaf[self] = false // only create one leaf event
 									//now start propagation of event to other nodes
@@ -494,6 +506,9 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 
 									eventsComplete[self]++ // increment count of events created for this node
 									selfParent[self] = *e  //update self parent to be this new event
+
+									// fmt.Print(kNew, ",")
+									kEvents[self] = append(kEvents[self], kNew)
 								}
 
 							}
@@ -541,6 +556,25 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 	fmt.Println("Event rate per (online) node: ", float64(totalEventsComplete)/float64(numOnlineNodes)/(float64(simTime)/1000.0))
 	// fmt.Println("[Indictor of gas efficiency] Average events per frame per (online) node: ", (float64(totalEventsComplete))/(float64(maxFrame)*float64(numOnlineNodes)))
 
+	fmt.Println("kEvents=np.array([")
+	for validator, kVals := range kEvents {
+		fmt.Print("[")
+		for ki, k := range kVals {
+			if ki < len(kVals)-1 {
+				fmt.Print(k, ",")
+			} else {
+				fmt.Print(k)
+			}
+		}
+		if validator < len(kEvents)-1 {
+			fmt.Println("],")
+		} else {
+			fmt.Println("]")
+		}
+	}
+	fmt.Println("])")
+	fmt.Println("")
+
 	var results Results
 	results.maxFrame = maxFrame
 	results.numEvents = totalEventsComplete
@@ -570,7 +604,7 @@ func processEvent(input abft.EventStore, lchs *abft.TestLachesis, e *QITestEvent
 	lchs.Lachesis.Process(e)
 
 	lchs.DagIndexer.Flush()
-	// HighestBefore based quorum indexer needs to process the event
+	// quorum indexer needs to process the event
 	quorumIndexer.ProcessEvent(&e.BaseEvent, self == e.Creator(), e.creationTime)
 
 	updateHeads(e, heads)

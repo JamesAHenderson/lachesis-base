@@ -1,6 +1,7 @@
 package ancestor
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
 	"sort"
@@ -12,7 +13,38 @@ import (
 	"github.com/Fantom-foundation/lachesis-base/inter/dag"
 	"github.com/Fantom-foundation/lachesis-base/inter/idx"
 	"github.com/Fantom-foundation/lachesis-base/inter/pos"
+	"github.com/Fantom-foundation/lachesis-base/vecfc"
 )
+
+type AtK struct {
+	k           [][][]int
+	maxFrameIdx int
+	maxFrame    idx.Frame
+}
+
+type AtKhat struct {
+	khat        [][][]float64
+	maxFrameIdx int
+	maxFrame    idx.Frame
+	numFrames   float64
+}
+
+type AtEvent struct {
+	event [][]hash.Event
+	known [][]bool
+}
+
+type validatorPerformanceMetrics struct {
+	rootKnown AtK
+	// rootKnownByQ AtK
+	valKnowsQ    AtEvent
+	valKnowsQAtK AtKhat
+}
+
+type rootLowestAfter struct {
+	event idx.Event
+	root  dag.Event
+}
 
 type sortedKIdx []KIdx
 type KIdx struct {
@@ -69,6 +101,7 @@ type DagIndex interface {
 	dagidx.VectorClock
 	dagidx.ForklessCause
 	GetEvent(hash.Event) dag.Event
+	GetLowestAfter(hash.Event) *vecfc.LowestAfterSeq
 }
 type DiffMetricFn func(median, current, update idx.Event, validatorIdx idx.Validator) Metric
 
@@ -82,9 +115,11 @@ type QuorumIndexer struct {
 
 	eventTiming EventTiming
 	sigmoid     Sigmoid
+
+	valPerfMetrics validatorPerformanceMetrics
 }
 
-func NewQuorumIndexer(validators *pos.Validators, lchs *abft.TestLachesis, sigmoid Sigmoid, threshold float64) *QuorumIndexer {
+func NewQuorumIndexer(validators *pos.Validators, lchs *abft.TestLachesis) *QuorumIndexer {
 	var eventTiming EventTiming
 	eventTiming.validatorHighestEvents = make([]validatorHighestEvent, validators.Len())
 	eventTiming.maxKnownFrame = 0
@@ -97,15 +132,203 @@ func NewQuorumIndexer(validators *pos.Validators, lchs *abft.TestLachesis, sigmo
 	eventTiming.newestFrameChecked = 0
 	eventTiming.newestFrameIndex = 0
 	eventTiming.minFastStake = (validators.TotalWeight() * 9) / 10 //80% of total stake
-	eventTiming.threshold = threshold
+	// eventTiming.threshold = threshold
+
+	numFrames := 10
+	numValidators := int(validators.Len())
+	var valPerfMetrics validatorPerformanceMetrics
+	// valPerfMetrics.rootKnown.maxFrame = 0
+	// valPerfMetrics.rootKnown.maxFrameIdx = 0
+	valPerfMetrics.rootKnown.k = make([][][]int, numFrames)
+
+	// valPerfMetrics.rootKnownByQ.maxFrame = 0
+	// valPerfMetrics.rootKnownByQ.maxFrameIdx = 0
+	// valPerfMetrics.rootKnownByQ.k = make([][][]int, numFrames)
+
+	valPerfMetrics.valKnowsQAtK.numFrames = float64(numFrames)
+	valPerfMetrics.valKnowsQAtK.maxFrameIdx = 0
+	valPerfMetrics.valKnowsQAtK.maxFrame = 0
+	valPerfMetrics.valKnowsQAtK.khat = make([][][]float64, numFrames)
+
+	valPerfMetrics.valKnowsQ.event = make([][]hash.Event, numFrames)
+	valPerfMetrics.valKnowsQ.known = make([][]bool, numFrames)
+	for i := 0; i < numFrames; i++ {
+		valPerfMetrics.rootKnown.k[i] = make([][]int, validators.Len())
+		// valPerfMetrics.rootKnownByQ.k[i] = make([][]int, validators.Len())
+		valPerfMetrics.valKnowsQAtK.khat[i] = make([][]float64, validators.Len())
+
+		valPerfMetrics.valKnowsQ.event[i] = make([]hash.Event, validators.Len())
+		valPerfMetrics.valKnowsQ.known[i] = make([]bool, validators.Len())
+
+		for j := 0; j < numValidators; j++ {
+			valPerfMetrics.rootKnown.k[i][j] = make([]int, validators.Len())
+			// valPerfMetrics.rootKnownByQ.k[i][j] = make([]int, validators.Len())
+			valPerfMetrics.valKnowsQAtK.khat[i][j] = make([]float64, validators.Len())
+			for k := 0; k < numValidators; k++ {
+				valPerfMetrics.rootKnown.k[i][j][k] = int(validators.Len()) * int(validators.Len())
+				// valPerfMetrics.rootKnownByQ.k[i][j][k] = int(validators.Len()) * int(validators.Len())
+				valPerfMetrics.valKnowsQAtK.khat[i][j][k] = float64(numFrames)
+
+			}
+		}
+	}
+
 	return &QuorumIndexer{
 		dagi:       lchs.DagIndex,
 		store:      lchs.Store,
 		validators: validators,
 
-		randParent:  rand.New(rand.NewSource(0)), // +++TODO rand.New(rand.NewSource(time.Now().UnixNano())),
-		eventTiming: eventTiming,
-		sigmoid:     sigmoid,
+		randParent:     rand.New(rand.NewSource(0)), // +++TODO rand.New(rand.NewSource(time.Now().UnixNano())),
+		eventTiming:    eventTiming,
+		valPerfMetrics: valPerfMetrics,
+		// sigmoid:     sigmoid,
+	}
+}
+
+func (vPM *validatorPerformanceMetrics) reset(resetIdx int) {
+	// resetIdx := vPM.rootKnown.maxFrameIdx // this will be the index of k to zero out
+	// if zeroFrame > vPM.rootKnown.maxFrame {
+	// 	for frame := vPM.rootKnown.maxFrame; frame <= zeroFrame; frame = frame + 1 {
+	// 		resetIdx = (resetIdx + 1) % len(vPM.rootKnown.k)
+	// 	}
+	// } else if zeroFrame < vPM.rootKnown.maxFrame {
+	// 	for frame := vPM.rootKnown.maxFrame; frame > zeroFrame; frame = frame - 1 {
+	// 		resetIdx = resetIdx - 1
+	// 		if resetIdx < 0 {
+	// 			resetIdx = len(vPM.rootKnown.k) - 1
+	// 		}
+	// 	}
+	// }
+	numVals := len(vPM.valKnowsQAtK.khat[0])
+	//now zero out the frame to prepare for overwriting by a new frame
+	for i := 0; i < numVals; i++ {
+		vPM.valKnowsQ.known[resetIdx][i] = false
+		for j := 0; j < numVals; j++ {
+			// vPM.rootKnown.k[resetIdx][i][j] = numVals * numVals
+			// vPM.rootKnownByQ.k[resetIdx][i][j] = numVals * numVals
+			vPM.valKnowsQAtK.khat[resetIdx][i][j] = float64(vPM.valKnowsQAtK.maxFrame)
+
+		}
+	}
+}
+
+func (h *QuorumIndexer) RankSelfPerformance() float64 {
+
+	if !h.SelfParentEvent.IsZero() {
+		selfID := h.dagi.GetEvent(h.SelfParentEvent).Creator()
+		higherPerfStake := h.validators.NewCounter()
+		selfPerf := h.ValidatorPerformance(selfID)
+		for _, valID := range h.validators.IDs() {
+
+			if valID != selfID {
+				valPerf := h.ValidatorPerformance(valID)
+				// fmt.Println(h.validators.GetIdx(valID), ": ", valPerf)
+				if valPerf < selfPerf {
+					higherPerfStake.Count(valID)
+				}
+			}
+		}
+		return float64(higherPerfStake.Sum()) / float64(h.validators.TotalWeight())
+	}
+	return 0.0
+}
+
+func (h *QuorumIndexer) ValidatorPerformance(valID idx.ValidatorID) float64 {
+	// get a metric of the performance of a validator
+	// +++ TODO this could be improved to use some caching of previous calculations if this function is likely to be called at intervals less than numFramesForMetric
+	valIdx := h.validators.GetIdx(valID)
+	TotalStakeNotVal := float64(h.validators.TotalWeight() - h.validators.Get(valID))
+	metric := 0.0
+	var numFramesForMetric idx.Frame = 3
+	maxFrame := h.eventTiming.maxKnownFrame
+	var minFrame idx.Frame
+	if maxFrame > numFramesForMetric {
+		minFrame = maxFrame - numFramesForMetric + 1 //+++TODO HOW MANY FRAMES?
+	} else {
+		minFrame = 0
+	}
+
+	for frame := maxFrame; frame >= minFrame && frame > 0; frame-- {
+		frameMetric := 0.0
+		eKnowsQRoots, found := h.FindEventKnowsQRoots(frame, valID)
+		if found {
+			kVal := h.progressTowardNewRoot(frame, eKnowsQRoots.ID(), nil)
+
+			lowestAfter := h.dagi.GetLowestAfter(eKnowsQRoots.ID())
+
+			for _, valIdxLA := range h.validators.Idxs() {
+				if valIdxLA != valIdx {
+					eventLASeq := lowestAfter.Get(valIdxLA) // sequence number of lowest after event
+
+					// use sequence number to find the event hash by starting at the highest known event
+					eventLA := h.eventTiming.validatorHighestEvents[valIdxLA].event
+					stakeLA := h.validators.GetWeightByIdx(valIdxLA)
+					if eventLASeq > 0 { // there is an event after
+						for ; eventLA.Seq() > eventLASeq; eventLA = h.dagi.GetEvent(*eventLA.SelfParent()) {
+						}
+						// the lowest after event may be in a later frame, so add contributions from all frames
+						kLA := 0.0
+						for f := frame; f <= eventLA.Frame(); f++ {
+							kLA += h.progressTowardNewRoot(frame, eventLA.ID(), nil)
+						}
+						frameMetric += (kLA - kVal) * float64(stakeLA) / (float64(maxFrame-frame) + 1.0 - kVal) / TotalStakeNotVal
+					} else { // there is not an event after
+						frameMetric += float64(stakeLA) / TotalStakeNotVal
+					}
+				}
+			}
+		} else {
+			frameMetric += 1.0 //float64(h.validators.Len()) * (float64(maxFrame-frame) + 1.0)
+		}
+		metric += frameMetric
+	}
+	return metric / float64(numFramesForMetric)
+
+}
+
+func (h *QuorumIndexer) FindEventKnowsQRoots(frame idx.Frame, valID idx.ValidatorID) (dag.Event, bool) {
+	// find an event from validator that has quorum roots from frame in its subgraph
+	// +++TODO incorporate caching to improve performance if this function will be called frequently
+	// +++TODO problems with forks?
+	valIdx := h.validators.GetIdx(valID)
+	roots := h.store.GetFrameRoots(frame)
+	var valLowestAfter []rootLowestAfter
+	// for each root in the frame, find the lowest event (sequence number) of validator that has the root in its subgraph
+	for _, root := range roots {
+		lowestAfterRoot := h.dagi.GetLowestAfter(root.ID)
+		if lowestAfterRoot.Get(valIdx) > 0 { // ensure that there is a lowest after event
+			var temp rootLowestAfter
+			temp.root = h.dagi.GetEvent(root.ID)
+			temp.event = lowestAfterRoot.Get(valIdx)
+			valLowestAfter = append(valLowestAfter, temp)
+		}
+	}
+
+	// sort so that the lowest events are first
+	sort.SliceStable(valLowestAfter, func(i, j int) bool {
+		return valLowestAfter[i].event < valLowestAfter[j].event
+	})
+
+	// find the lowest event that knows at least quorum roots
+	stakeCtr := h.validators.NewCounter()
+	var knowsQuorum idx.Event
+	for _, event := range valLowestAfter {
+		stakeCtr.Count(event.root.Creator())
+		knowsQuorum = event.event
+		if stakeCtr.HasQuorum() {
+			break
+		}
+	}
+	hEvent := h.eventTiming.validatorHighestEvents[valIdx]
+	knowsQuorumDAGEvent := hEvent.event
+	if knowsQuorum > 0 {
+		for ; knowsQuorumDAGEvent.Seq() > knowsQuorum; knowsQuorumDAGEvent = h.dagi.GetEvent(*knowsQuorumDAGEvent.SelfParent()) {
+		}
+	}
+	if stakeCtr.HasQuorum() {
+		return knowsQuorumDAGEvent, true
+	} else {
+		return knowsQuorumDAGEvent, false // return false if no event knows quroum roots
 	}
 }
 
@@ -136,6 +359,7 @@ func (h *QuorumIndexer) ProcessEvent(event dag.Event, selfEvent bool, time int) 
 		h.eventTiming.validatorHighestEvents[creatorIdx].event = event
 		h.eventTiming.validatorHighestEvents[creatorIdx].time = time
 	}
+
 }
 
 func (h *QuorumIndexer) Choose(chosenParents hash.Events, candidateParents hash.Events) int {
@@ -162,7 +386,7 @@ func (h *QuorumIndexer) Choose(chosenParents hash.Events, candidateParents hash.
 		}
 	}
 	if len(bestCandidates) > 1 {
-		// To choose from the list of highest khat metric canidates, sort them by all root knowledge metric, k
+		// To choose from the list of equal highest khat metric canidates, sort them by all root knowledge metric, k
 		metrics = h.GetMetricsOfRootKnowledge(bestCandidates, chosenParents, bestMetrics)
 		sort.Sort(sortedRootProgressMetrics(metrics))
 	}
@@ -588,7 +812,7 @@ func (h *QuorumIndexer) classifyFastOrSlow() {
 		rootInPrevFrame := true                                                           //no previous frame when starting, so take it to be true
 
 		for numFrames := 0; numFrames < h.eventTiming.numFramesToCheck; numFrames++ {
-			if rootInPrevFrame == false && h.eventTiming.hasRoot[valIdx][frameIdx] == false {
+			if !rootInPrevFrame && !h.eventTiming.hasRoot[valIdx][frameIdx] {
 				h.eventTiming.fast[valIdx] = false // a validator is NOT fast if it has missed producing a root in consecutive frames
 				break
 			}
@@ -638,13 +862,14 @@ func (h *QuorumIndexer) stakeThreshold() uint32 {
 	}
 	if selfFast {
 		if selfStake < sortedWeights[quorumValidator] {
-			threshold = uint32(float64(h.validators.Quorum())) //* float64(sortedWeights[quorumValidator]) / float64(selfStake)) //give larger stake validators a smaller threshold so they produce events faster than smaller stake validators
+			threshold = uint32(float64(h.validators.Quorum()) * float64(sortedWeights[quorumValidator]) / float64(selfStake)) //give larger stake validators a smaller threshold so they produce events faster than smaller stake validators
 		} else {
 			threshold = uint32(float64(h.validators.Quorum()))
 		}
 	} else {
 		threshold = uint32(h.validators.TotalWeight() + 1) //anything above total weight, so that events cant't be created according to this condition
 	}
+	threshold = uint32(selfStake) + 1
 	return threshold
 }
 
@@ -852,7 +1077,7 @@ func (h *QuorumIndexer) DAGProgressAndTimeIntervalEventTimingCondition(chosenHea
 	return false
 }
 
-func (h *QuorumIndexer) DAGProgressEventTimingCondition(chosenHeads hash.Events, online map[idx.ValidatorID]bool, time int) bool {
+func (h *QuorumIndexer) DAGProgressEventTimingCondition(chosenHeads hash.Events, online map[idx.ValidatorID]bool, time int) (bool, int) {
 	// This function is used to determine if a new event should be created based upon DAG progress.
 	// Primarily the function works by ordering the highest known event from each validator in the DAG according to the metric returned by RootKnowledgeByCount.
 	// If the number of validators exceeding the metric of the most recent self event is greater than a threshold count, a new event should be created.
@@ -872,41 +1097,53 @@ func (h *QuorumIndexer) DAGProgressEventTimingCondition(chosenHeads hash.Events,
 	// kPrev := h.RootKnowledgeByStake(selfFrame, h.SelfParentEvent, nil)        // calculate metric of root knowledge for previous self event
 	// kNew := h.RootKnowledgeByStake(selfFrame, h.SelfParentEvent, chosenHeads) // calculate metric of root knowledge for new event under consideration
 
-	if kNew > kPrev { // this condition prevents the function always returning true when less than quorum nodes are online, and no DAG progress can be made
-		for _, e := range h.eventTiming.validatorHighestEvents {
-			if e.event != nil {
-				eFrame := h.dagi.GetEvent(e.event.ID()).Frame()
-				switch {
-				case eFrame > selfFrame: // validator's frame is ahead of self
+	// if kNew > kPrev { // this condition prevents the function always returning true when less than quorum nodes are online, and no DAG progress can be made
+	for _, e := range h.eventTiming.validatorHighestEvents {
+		if e.event != nil {
+			eFrame := h.dagi.GetEvent(e.event.ID()).Frame()
+			switch {
+			case eFrame > selfFrame: // validator's frame is ahead of self
+				kGreaterCount++
+				kGreaterStake.Count(e.event.Creator())
+				break
+			// case time-h.validatorHighestEvents[selfIdx].time > timeThreshParam && time-h.validatorHighestEvents[i].time > timeThreshParam: // max time interval between receiveing events from this validator exceeded
+			// 	kGreaterCount++
+			// 	kGreaterStake.Count(e.event.Creator())
+			// 	break
+			// case h.validatorHighestEvents[i].kChange == false: // most recent event received from i did not increase k DAG progress metric
+			// 	kGreaterCount++
+			// 	kGreaterStake.Count(e.event.Creator())
+			// 	break
+			case eFrame == selfFrame:
+				k := h.RootKnowledgeByCount(selfFrame, e.event.ID(), nil)
+				// k := h.RootKnowledgeByStake(selfFrame, e.event.ID(), nil)
+				if k >= kPrev {
 					kGreaterCount++
 					kGreaterStake.Count(e.event.Creator())
-					break
-				// case time-h.validatorHighestEvents[selfIdx].time > timeThreshParam && time-h.validatorHighestEvents[i].time > timeThreshParam: // max time interval between receiveing events from this validator exceeded
-				// 	kGreaterCount++
-				// 	kGreaterStake.Count(e.event.Creator())
-				// 	break
-				// case h.validatorHighestEvents[i].kChange == false: // most recent event received from i did not increase k DAG progress metric
-				// 	kGreaterCount++
-				// 	kGreaterStake.Count(e.event.Creator())
-				// 	break
-				case eFrame == selfFrame:
-					k := h.RootKnowledgeByCount(selfFrame, e.event.ID(), nil)
-					// k := h.RootKnowledgeByStake(selfFrame, e.event.ID(), nil)
-					if k >= kPrev {
-						kGreaterCount++
-						kGreaterStake.Count(e.event.Creator())
-					}
 				}
 			}
 		}
-
-		// if kGreaterCount >= h.Threshold() {
-		// 	return true // self should create a new event
-		// }
-		// if uint32(kGreaterStake.Sum()) >= h.stakeThreshold() {
-		if kGreaterStake.Sum() >= h.validators.Quorum() {
-			return true // self should create a new event
-		}
 	}
-	return false // self should not create a new event
+
+	// if kGreaterCount >= h.Threshold() {
+	// 	return true // self should create a new event
+	// }
+	if uint32(kGreaterStake.Sum()) >= h.stakeThreshold() {
+		// if kGreaterStake.Sum() >= h.validators.Quorum() {
+		if kNew > kPrev {
+			return true, kNew
+		} else {
+
+			if time > 100 {
+				fmt.Println("!!!KNEW<=KPREV!!!")
+				return true, kNew
+			}
+			fmt.Println("!!!KNEW<=KPREV!!!No Event!!!")
+		}
+		// return true // self should create a new event
+	}
+	// }
+
+	// }
+	return false, kNew // self should not create a new event
 }

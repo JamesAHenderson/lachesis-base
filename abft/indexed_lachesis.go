@@ -12,6 +12,7 @@ import (
 	"github.com/Fantom-foundation/lachesis-base/inter/pos"
 	"github.com/Fantom-foundation/lachesis-base/kvdb"
 	"github.com/Fantom-foundation/lachesis-base/lachesis"
+	"github.com/Fantom-foundation/lachesis-base/vecfc"
 )
 
 var _ lachesis.Consensus = (*IndexedLachesis)(nil)
@@ -31,6 +32,7 @@ type DagIndexer interface {
 	dagidx.ForklessCause
 
 	GetEvent(hash.Event) dag.Event
+	GetLowestAfter(hash.Event) *vecfc.LowestAfterSeq
 
 	Add(dag.Event) error
 	Flush()
