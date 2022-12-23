@@ -50,7 +50,7 @@ type QITestEvent struct {
 var mutex sync.Mutex // a mutex used for variables shared across go rountines
 
 func TestQI(t *testing.T) {
-	numNodes := 20
+	numNodes := 25
 	stakeDist := stakeCumDist()             // for stakes drawn from distribution
 	stakeRNG := rand.New(rand.NewSource(0)) // for stakes drawn from distribution
 
@@ -68,138 +68,25 @@ func TestQI(t *testing.T) {
 	// Uncomment the desired latency type
 
 	// Latencies between validators are drawn from a Normal Gaussian distribution
-	var latency gaussianLatency
-	latency.mean = 100 // mean latency in milliseconds
-	latency.std = 0    // standard deviation of latency in milliseconds
-	maxLatency := int(latency.mean + 4*latency.std)
+	// var latency gaussianLatency
+	// latency.mean = 100 // mean latency in milliseconds
+	// latency.std = 0    // standard deviation of latency in milliseconds
+	// maxLatency := int(latency.mean + 4*latency.std)
 
 	// Latencies between validators are modelled using a dataset of real world internet latencies between cities
-	// var latency cityLatency
-	// var seed int64
-	// seed = 0 //use this for the same seed each time the simulator runs
-	// // seed = time.Now().UnixNano() //use this for a different seed each time the simulator runs
-	// maxLatency := latency.initialise(numNodes, seed)
+	var latency cityLatency
+	var seed int64
+	seed = 1 //use this for the same seed each time the simulator runs
+	// seed = time.Now().UnixNano() //use this for a different seed each time the simulator runs
+	maxLatency := latency.initialise(numNodes, seed)
 
 	// Latencies between validators are drawn from a dataset of latencies observed by one Fantom main net validator. Note all pairs of validators will use the same distribution
 	// var latency mainNetLatency
 	// maxLatency := latency.initialise()
 
-	simulationDuration := 100000 // length of simulated time in milliseconds
-	// thresholds := make([]float64, 0)
-	// for thresh := 0.0; thresh <= 1000.0; thresh = thresh + 50.0 {
-	// 	thresholds = append(thresholds, thresh)
-	// }
-	// slopes := make([]float64, 0)
-	// for s := 0.0; s <= 0.1; s = s + 0.01 {
-	// 	slopes = append(slopes, s)
-	// }
-	// results := make([][]Results, len(thresholds))
-	// for i, _ := range results {
-	// 	results[i] = make([]Results, len(slopes))
-	// }
-	// var sigmoid ancestor.Sigmoid
-	// for ti, threshold := range thresholds {
-	// 	for si, slope := range slopes {
-	// 		// for centre := 0.0; centre <= 1.0; centre = centre + 0.1 {
-	// 		// slope := 0.1
-	// 		centre := 0.67
-	// 		sigmoid.Centre = centre
-	// 		sigmoid.Slope = slope
+	simulationDuration := 1600000 // length of simulated time in milliseconds
 
-	// 		fmt.Println("Threshold: ", threshold, " Sigmoid Centre: ", centre, " Sigmoid Slope: ", slope)
-	// 		//Now run the simulation
-	// 		results[ti][si] = simulate(weights, QIParentCount, randParentCount, offlineNodes, &latency, maxLatency, simulationDuration, sigmoid, threshold)
-	// 		// }
-	// 	}
-	// }
 	simulate(weights, QIParentCount, randParentCount, offlineNodes, &latency, maxLatency, simulationDuration)
-	// Print Results
-	// currenTime := time.Now()
-	// fileName := "../../../../SimulationResults "
-	// fileName += currenTime.String()
-	// fileName += ".txt"
-	// file, err := os.Create(fileName)
-	// if err != nil {
-	// 	log.Fatal(err)
-	// }
-	// defer file.Close()
-	// mw := io.MultiWriter(os.Stdout, file)
-
-	// fmt.Fprint(mw, "maxFrame=np.array([")
-	// for ti, tResult := range results {
-	// 	fmt.Fprint(mw, "[")
-	// 	for si, result := range tResult {
-	// 		if si < len(tResult)-1 {
-	// 			fmt.Fprint(mw, result.maxFrame, ",")
-	// 		} else {
-	// 			fmt.Fprint(mw, result.maxFrame)
-	// 		}
-	// 	}
-	// 	if ti < len(results)-1 {
-	// 		fmt.Fprintln(mw, "],")
-	// 	} else {
-	// 		fmt.Fprint(mw, "]")
-	// 	}
-	// }
-	// fmt.Fprintln(mw, "])")
-	// fmt.Fprintln(mw, "")
-
-	// fmt.Fprint(mw, "numEvents=np.array([")
-	// for ti, tResult := range results {
-	// 	fmt.Fprint(mw, "[")
-	// 	for si, result := range tResult {
-	// 		if si < len(tResult)-1 {
-	// 			fmt.Fprint(mw, result.numEvents, ",")
-	// 		} else {
-	// 			fmt.Fprint(mw, result.numEvents)
-	// 		}
-	// 	}
-	// 	if ti < len(results)-1 {
-	// 		fmt.Fprintln(mw, "],")
-	// 	} else {
-	// 		fmt.Fprint(mw, "]")
-	// 	}
-	// }
-	// fmt.Fprintln(mw, "])")
-	// fmt.Fprintln(mw, "")
-
-	// fmt.Fprint(mw, "thresholds=np.array([")
-	// for ti, tResult := range results {
-	// 	fmt.Fprint(mw, "[")
-	// 	for si, _ := range tResult {
-	// 		if si < len(tResult)-1 {
-	// 			fmt.Fprint(mw, thresholds[ti], ",")
-	// 		} else {
-	// 			fmt.Fprint(mw, thresholds[ti])
-	// 		}
-	// 	}
-	// 	if ti < len(results)-1 {
-	// 		fmt.Fprintln(mw, "],")
-	// 	} else {
-	// 		fmt.Fprint(mw, "]")
-	// 	}
-	// }
-	// fmt.Fprintln(mw, "])")
-	// fmt.Fprintln(mw, "")
-
-	// fmt.Fprint(mw, "slopes=np.array([")
-	// for ti, tResult := range results {
-	// 	fmt.Fprint(mw, "[")
-	// 	for si, _ := range tResult {
-	// 		if si < len(tResult)-1 {
-	// 			fmt.Fprint(mw, slopes[si], ",")
-	// 		} else {
-	// 			fmt.Fprint(mw, slopes[si])
-	// 		}
-	// 	}
-	// 	if ti < len(results)-1 {
-	// 		fmt.Fprintln(mw, "],")
-	// 	} else {
-	// 		fmt.Fprint(mw, "]")
-	// 	}
-	// }
-	// fmt.Fprintln(mw, "])")
-	// fmt.Fprintln(mw, "")
 
 }
 
@@ -257,7 +144,6 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 		lch, _, input = abft.FakeLachesis(nodes, weights)
 		lchs[i] = *lch
 		inputs[i] = *input
-		// quorumIndexers[i] = *ancestor.NewQuorumIndexer(validators, lch, sigmoid, threshold)
 		quorumIndexers[i] = *ancestor.NewQuorumIndexer(validators, lch)
 	}
 
@@ -275,15 +161,15 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 			}
 		}
 	}
-	minCheckInterval := 11 // min interval before re-checking if event can be created
+	minCheckInterval := 11 // minimum interval before re-checking if event can be created; currently 11 ms in go-opera
 	prevCheckTime := make([]int, numValidators)
 	minEventCreationInterval := make([]int, numValidators) // minimum interval between creating event
 	for i, _ := range minEventCreationInterval {
-		// minEventCreationInterval[i] = int(11 * float64(weights[0]) / float64(weights[i]))
-		minEventCreationInterval[i] = 11
-		if i == 2 {
-			minEventCreationInterval[i] = 1000 //rand.Intn(10000)
-		}
+		minEventCreationInterval[i] = int(30 * float64(weights[0]) / float64(weights[i])) // scale minimum emission interval with stake, so that large validators can emit more frequently; roughly approximates available gas
+		// minEventCreationInterval[i] = minCheckInterval // 11 ms is the current go-opera interval for checking if a new event shoudl be emitted
+		// if i == 2 { // chosse a validator that misbehaves
+		// 	minEventCreationInterval[i] = 1000 //rand.Intn(10000) // make minimum emission interval large to simulate a misbehaving validator
+		// }
 	}
 	// initial delay to avoid synchronous events
 	initialDelay := make([]int, numValidators)
@@ -301,7 +187,7 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 		isLeaf[node] = true
 	}
 
-	kEvents := make([][]int, numValidators) // store k for each event for later analysis
+	// kEvents := make([][]int, numValidators) // store k for each event for later analysis
 
 	selfParent := make([]QITestEvent, numValidators)
 
@@ -316,7 +202,7 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 		timeIdx = (timeIdx + 1) % maxLatency
 		simTime = simTime + 1
 		if simTime%1000 == 0 {
-			fmt.Print(" TIME: ", simTime) // print time progress for tracking simulation progression
+			fmt.Println(" TIME: ", simTime) // print time progress for tracking simulation progression
 		}
 
 		// Check to see if new events are received by nodes
@@ -421,6 +307,9 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 						quorumIndexers[self].SelfParentEvent = selfParent[self].ID() // quorumIndexer needs to know the self's previous event
 						if !isLeaf[self] {                                           // only non leaf events have parents
 							// iteratively select the best parent from the list of heads using quorum indexer parent selection
+							// if malicious { // choose bad parents
+
+							// }
 							for j := 0; j < QIParentCount-1; j++ {
 								if len(heads) <= 0 {
 									//no more heads to choose, adding more parents will not improve DAG progress
@@ -473,13 +362,22 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 							passedTime := simTime - selfParent[self].creationTime
 							if passedTime > minEventCreationInterval[self] {
 								eTiming := false
-								kNew := 0
+								// kNew := 0
 								if !isLeaf[self] {
-									eTiming, kNew = quorumIndexers[self].DAGProgressEventTimingCondition(e.Parents(), online, passedTime)
+									eTiming, _ = quorumIndexers[self].DAGProgressEventTimingCondition(e.Parents(), online, passedTime)
 								}
 								if createRandEvent || isLeaf[self] || eTiming {
 									// mutex.Lock()
-									// fmt.Println(self, ": StakeAbove: ", quorumIndexers[self].RankSelfPerformance())
+									// stakeAbove, numAbove := quorumIndexers[self].RankSelfPerformance()
+									// var maxFrame idx.Frame = 0
+									// for _, events := range headsAll {
+									// 	for _, event := range events {
+									// 		if event.Frame() > maxFrame {
+									// 			maxFrame = event.Frame()
+									// 		}
+									// 	}
+									// }
+									// fmt.Println(self, ": StakeAbove: ", stakeAbove, " NumAbove: ", numAbove, " Fast: ", quorumIndexers[self].FastOrSlow.Fast, " Testing: ", quorumIndexers[self].FastOrSlow.Testing, " MaxFrame:", maxFrame)
 									// mutex.Unlock()
 									//create an event if (i)a random event is created (ii) is a leaf event, or (iii) event timing condition is met
 									isLeaf[self] = false // only create one leaf event
@@ -508,7 +406,7 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 									selfParent[self] = *e  //update self parent to be this new event
 
 									// fmt.Print(kNew, ",")
-									kEvents[self] = append(kEvents[self], kNew)
+									// kEvents[self] = append(kEvents[self], kNew)
 								}
 
 							}
@@ -523,6 +421,18 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 
 	// print some useful output
 	fmt.Println("")
+	var stake pos.Weight
+	var fastStake pos.Weight
+
+	for self := 0; self < numValidators; self++ {
+
+		fmt.Println("Self: ", self, "Stake: ", weights[self], "Stake Frac: ", float64(weights[self])/float64(validators.TotalWeight()), " Fast: ", quorumIndexers[self].FastOrSlow.Fast, " Testing: ", quorumIndexers[self].FastOrSlow.Update, " Stake Before: ", float64(quorumIndexers[self].FastOrSlow.NumHigherPerf)/float64(validators.TotalWeight()), " ", float64(stake)/float64(validators.TotalWeight()))
+		stake += weights[self]
+		if quorumIndexers[self].FastOrSlow.Fast && !quorumIndexers[self].FastOrSlow.Update {
+			fastStake += weights[self]
+		}
+	}
+	fmt.Println("Fast Stake: ", float64(fastStake)/float64(validators.TotalWeight()))
 	// fmt.Println("Simulated time ", float64(simTime)/1000.0, " seconds")
 	// fmt.Println("Number of nodes: ", numValidators)
 	numOnlineNodes := 0
@@ -550,30 +460,30 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 	}
 
 	fmt.Println("Max Frame: ", maxFrame)
-	// fmt.Println("[Indicator of TTF] Frames per second: ", (1000.0*float64(maxFrame))/float64(simTime))
+	fmt.Println("[Indicator of TTF] Frames per second: ", (1000.0*float64(maxFrame))/float64(simTime))
 	fmt.Println(" Number of Events: ", totalEventsComplete)
 
 	fmt.Println("Event rate per (online) node: ", float64(totalEventsComplete)/float64(numOnlineNodes)/(float64(simTime)/1000.0))
 	// fmt.Println("[Indictor of gas efficiency] Average events per frame per (online) node: ", (float64(totalEventsComplete))/(float64(maxFrame)*float64(numOnlineNodes)))
 
-	fmt.Println("kEvents=np.array([")
-	for validator, kVals := range kEvents {
-		fmt.Print("[")
-		for ki, k := range kVals {
-			if ki < len(kVals)-1 {
-				fmt.Print(k, ",")
-			} else {
-				fmt.Print(k)
-			}
-		}
-		if validator < len(kEvents)-1 {
-			fmt.Println("],")
-		} else {
-			fmt.Println("]")
-		}
-	}
-	fmt.Println("])")
-	fmt.Println("")
+	// fmt.Println("kEvents=np.array([")
+	// for validator, kVals := range kEvents {
+	// 	fmt.Print("[")
+	// 	for ki, k := range kVals {
+	// 		if ki < len(kVals)-1 {
+	// 			fmt.Print(k, ",")
+	// 		} else {
+	// 			fmt.Print(k)
+	// 		}
+	// 	}
+	// 	if validator < len(kEvents)-1 {
+	// 		fmt.Println("],")
+	// 	} else {
+	// 		fmt.Println("]")
+	// 	}
+	// }
+	// fmt.Println("])")
+	// fmt.Println("")
 
 	var results Results
 	results.maxFrame = maxFrame

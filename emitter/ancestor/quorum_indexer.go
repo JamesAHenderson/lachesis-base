@@ -16,29 +16,12 @@ import (
 	"github.com/Fantom-foundation/lachesis-base/vecfc"
 )
 
-type AtK struct {
-	k           [][][]int
-	maxFrameIdx int
-	maxFrame    idx.Frame
-}
-
-type AtKhat struct {
-	khat        [][][]float64
-	maxFrameIdx int
-	maxFrame    idx.Frame
-	numFrames   float64
-}
-
-type AtEvent struct {
-	event [][]hash.Event
-	known [][]bool
-}
-
-type validatorPerformanceMetrics struct {
-	rootKnown AtK
-	// rootKnownByQ AtK
-	valKnowsQ    AtEvent
-	valKnowsQAtK AtKhat
+type FastOrSlow struct {
+	frameStartTest idx.Frame
+	testDuration   idx.Frame
+	Fast           bool
+	NumHigherPerf  uint32
+	Update         bool
 }
 
 type rootLowestAfter struct {
@@ -113,10 +96,10 @@ type QuorumIndexer struct {
 	randParent      *rand.Rand
 	SelfParentEvent hash.Event
 
+	FastOrSlow FastOrSlow
+
 	eventTiming EventTiming
 	sigmoid     Sigmoid
-
-	valPerfMetrics validatorPerformanceMetrics
 }
 
 func NewQuorumIndexer(validators *pos.Validators, lchs *abft.TestLachesis) *QuorumIndexer {
@@ -131,163 +114,274 @@ func NewQuorumIndexer(validators *pos.Validators, lchs *abft.TestLachesis) *Quor
 	}
 	eventTiming.newestFrameChecked = 0
 	eventTiming.newestFrameIndex = 0
-	eventTiming.minFastStake = (validators.TotalWeight() * 9) / 10 //80% of total stake
+	eventTiming.minFastStake = (validators.TotalWeight() * 9) / 10 //% of total stake
 	// eventTiming.threshold = threshold
 
-	numFrames := 10
-	numValidators := int(validators.Len())
-	var valPerfMetrics validatorPerformanceMetrics
-	// valPerfMetrics.rootKnown.maxFrame = 0
-	// valPerfMetrics.rootKnown.maxFrameIdx = 0
-	valPerfMetrics.rootKnown.k = make([][][]int, numFrames)
-
-	// valPerfMetrics.rootKnownByQ.maxFrame = 0
-	// valPerfMetrics.rootKnownByQ.maxFrameIdx = 0
-	// valPerfMetrics.rootKnownByQ.k = make([][][]int, numFrames)
-
-	valPerfMetrics.valKnowsQAtK.numFrames = float64(numFrames)
-	valPerfMetrics.valKnowsQAtK.maxFrameIdx = 0
-	valPerfMetrics.valKnowsQAtK.maxFrame = 0
-	valPerfMetrics.valKnowsQAtK.khat = make([][][]float64, numFrames)
-
-	valPerfMetrics.valKnowsQ.event = make([][]hash.Event, numFrames)
-	valPerfMetrics.valKnowsQ.known = make([][]bool, numFrames)
-	for i := 0; i < numFrames; i++ {
-		valPerfMetrics.rootKnown.k[i] = make([][]int, validators.Len())
-		// valPerfMetrics.rootKnownByQ.k[i] = make([][]int, validators.Len())
-		valPerfMetrics.valKnowsQAtK.khat[i] = make([][]float64, validators.Len())
-
-		valPerfMetrics.valKnowsQ.event[i] = make([]hash.Event, validators.Len())
-		valPerfMetrics.valKnowsQ.known[i] = make([]bool, validators.Len())
-
-		for j := 0; j < numValidators; j++ {
-			valPerfMetrics.rootKnown.k[i][j] = make([]int, validators.Len())
-			// valPerfMetrics.rootKnownByQ.k[i][j] = make([]int, validators.Len())
-			valPerfMetrics.valKnowsQAtK.khat[i][j] = make([]float64, validators.Len())
-			for k := 0; k < numValidators; k++ {
-				valPerfMetrics.rootKnown.k[i][j][k] = int(validators.Len()) * int(validators.Len())
-				// valPerfMetrics.rootKnownByQ.k[i][j][k] = int(validators.Len()) * int(validators.Len())
-				valPerfMetrics.valKnowsQAtK.khat[i][j][k] = float64(numFrames)
-
-			}
-		}
-	}
+	var FastOrSlow FastOrSlow
+	FastOrSlow.Fast = true
+	FastOrSlow.frameStartTest = 10 + idx.Frame(rand.Intn(200))
+	FastOrSlow.testDuration = 25
+	FastOrSlow.Update = false
 
 	return &QuorumIndexer{
 		dagi:       lchs.DagIndex,
 		store:      lchs.Store,
 		validators: validators,
 
-		randParent:     rand.New(rand.NewSource(0)), // +++TODO rand.New(rand.NewSource(time.Now().UnixNano())),
-		eventTiming:    eventTiming,
-		valPerfMetrics: valPerfMetrics,
+		randParent:  rand.New(rand.NewSource(0)), // +++TODO rand.New(rand.NewSource(time.Now().UnixNano())),
+		eventTiming: eventTiming,
+		FastOrSlow:  FastOrSlow,
 		// sigmoid:     sigmoid,
 	}
 }
 
-func (vPM *validatorPerformanceMetrics) reset(resetIdx int) {
-	// resetIdx := vPM.rootKnown.maxFrameIdx // this will be the index of k to zero out
-	// if zeroFrame > vPM.rootKnown.maxFrame {
-	// 	for frame := vPM.rootKnown.maxFrame; frame <= zeroFrame; frame = frame + 1 {
-	// 		resetIdx = (resetIdx + 1) % len(vPM.rootKnown.k)
-	// 	}
-	// } else if zeroFrame < vPM.rootKnown.maxFrame {
-	// 	for frame := vPM.rootKnown.maxFrame; frame > zeroFrame; frame = frame - 1 {
-	// 		resetIdx = resetIdx - 1
-	// 		if resetIdx < 0 {
-	// 			resetIdx = len(vPM.rootKnown.k) - 1
-	// 		}
+func (h *QuorumIndexer) FastOrSlowThreshold() uint32 {
+	// Sets the event timing ordering threshold
+	var threshold uint32
+	if h.FastOrSlow.Fast {
+		//the validator is part of the set of high performance, fast emitting validators
+		selfID := h.dagi.GetEvent(h.SelfParentEvent).Creator()
+		selfStake := h.validators.GetWeightByIdx(h.validators.GetIdx(selfID))
+		sortedWeights := h.validators.SortedWeights()
+		sortedIDs := h.validators.SortedIDs()
+
+		//find the quorumth validator, starting with largest validators
+		weightCounter := h.validators.NewCounter()
+		quorumValidator := 0
+		for _, ID := range sortedIDs {
+			weightCounter.Count(ID)
+			if weightCounter.HasQuorum() {
+				break
+			}
+			quorumValidator++
+		}
+		// set threshold based on stake, so that large validators have a lower threshold and emit events more frequently
+		threshold = uint32(float64(h.validators.Quorum()) * float64(sortedWeights[quorumValidator]) / float64(selfStake)) //give larger stake validators a smaller threshold so they produce events faster than smaller stake validators
+		if threshold > uint32(h.validators.Quorum()) {
+			// maximum threshold is quorum (to prevent stalling)
+			threshold = uint32(h.validators.Quorum())
+		}
+	} else {
+		// the validator is not part of the set of high performance, fast emitting validators
+		threshold = uint32(h.validators.TotalWeight() + 1)
+	}
+	return threshold
+
+}
+
+func (h *QuorumIndexer) thresholdFrame(stakeThreshold float64) idx.Frame {
+	// this function is used to find the highest frame that has been reached by a stakeThreshold fraction of validators
+	type frameStake struct { //used to record the highest frame reached by a validator
+		frame idx.Frame
+		valID idx.ValidatorID
+	}
+	highestFramesStakes := make([]frameStake, h.validators.Len())
+	for i, event := range h.eventTiming.validatorHighestEvents {
+		if event.event != nil {
+			highestFramesStakes[i].frame = event.event.Frame()
+			highestFramesStakes[i].valID = event.event.Creator()
+		}
+	}
+	//sort each validator by its highest frame
+	sort.Slice(highestFramesStakes, func(i, j int) bool { return highestFramesStakes[i].frame > highestFramesStakes[j].frame }) // sort weights in order
+
+	// starting from the validator with the highest frame, count stakeThreshold validators
+	// the threshold frame is determined by the last validator counted
+	thresholdFrameStake := h.validators.NewCounter()
+	var thresholdFrame idx.Frame
+	for _, frameStake := range highestFramesStakes {
+		thresholdFrameStake.Count(frameStake.valID)
+		if float64(thresholdFrameStake.Sum())/float64(h.validators.TotalWeight()) > stakeThreshold {
+			thresholdFrame = frameStake.frame
+			break
+		}
+	}
+	thresholdFrame -= 1 // we want completed, not in progress frames, so reduce by one frame
+
+	// ensure self is at least up to thresholdFrame
+	// if !h.SelfParentEvent.IsZero() {
+	// 	selfID := h.dagi.GetEvent(h.SelfParentEvent).Creator()
+	// 	selfIdx := h.validators.GetIdx(selfID)
+	// 	selfFrame := h.eventTiming.validatorHighestEvents[selfIdx].event.Frame() - 1
+	// 	if thresholdFrame > selfFrame {
+	// 		thresholdFrame = selfFrame
 	// 	}
 	// }
-	numVals := len(vPM.valKnowsQAtK.khat[0])
-	//now zero out the frame to prepare for overwriting by a new frame
-	for i := 0; i < numVals; i++ {
-		vPM.valKnowsQ.known[resetIdx][i] = false
-		for j := 0; j < numVals; j++ {
-			// vPM.rootKnown.k[resetIdx][i][j] = numVals * numVals
-			// vPM.rootKnownByQ.k[resetIdx][i][j] = numVals * numVals
-			vPM.valKnowsQAtK.khat[resetIdx][i][j] = float64(vPM.valKnowsQAtK.maxFrame)
+	return thresholdFrame
+}
 
+func (h *QuorumIndexer) CheckFastOrSlow() {
+	// This function is used to determine if self validator is sufficiently high performance (measure by a DAG progress metric)
+	// to be included in the set of validator that use the performance event timing conditions to emit fast and maintain high frame rate/low TTF
+	// Slow validators should use a separate event timing condition based on transaction demand and gas availablity
+	minNumExcess := 2     // the number of validators in excess of quorum in the set of validators that emit fast.
+	stakeThreshold := 0.7 // the minimum stake fraction of validators that should be emit fast. This should be above quorum (2/3+1)
+	// +++TODO, it may be preferable to count the stake of the largest minNumExcess validators s_excess, and require that stakeThreshold be quorum + s_excess
+	// that way if a few large validators happen to be disrupted, then there are sufficient smaller ones to maintain a fast quorum. However, since the stake distribution
+	// is heavily concentrated in large validators, this may not be possible.
+
+	thresholdFrame := h.thresholdFrame(stakeThreshold)
+	if h.eventTiming.maxKnownFrame >= h.FastOrSlow.frameStartTest && thresholdFrame < h.FastOrSlow.frameStartTest+h.FastOrSlow.testDuration {
+		// it is time to start emitting fast to check self validator performance, and if self validator should emit fast, or not
+		self := h.dagi.GetEvent(h.SelfParentEvent).Creator()
+
+		if !h.FastOrSlow.Update { // some testing /debugging output
+			fmt.Println("Frame: ", h.eventTiming.maxKnownFrame, " Fast: ", h.validators.Get(self), " ", float64(h.validators.Get(self))/float64(h.validators.TotalWeight()))
+		}
+
+		h.FastOrSlow.Update = true // flag to indicate the validator has switched to emit fast temporarily to test its fast performance
+		h.FastOrSlow.Fast = true   // flag to indicate the validator should emit fast
+
+	}
+	if thresholdFrame > h.FastOrSlow.frameStartTest+h.FastOrSlow.testDuration && h.FastOrSlow.Update {
+		// testing frames are complete, now compare self performance to other validators durign the testing period
+		stakeBetterThanSelf, numHigherPerf, numExcess := h.RankSelfPerformance()
+		h.FastOrSlow.NumHigherPerf = numHigherPerf
+		self := h.dagi.GetEvent(h.SelfParentEvent).Creator()
+		if stakeBetterThanSelf > stakeThreshold && numExcess >= minNumExcess {
+			// self performance was not sufficient to be included in the set of fast validators
+			fmt.Println("Slowed: ", h.validators.Get(self), " ", float64(h.validators.Get(self))/float64(h.validators.TotalWeight()), "Stake Above: ", stakeBetterThanSelf)
+			h.FastOrSlow.Fast = false
+
+		} else {
+			// self performance was sufficient to be included in the set of fast validators
+			h.FastOrSlow.Fast = true
+			fmt.Println("Didn't slow: ", h.validators.Get(self), " ", float64(h.validators.Get(self))/float64(h.validators.TotalWeight()), "Stake Above: ", stakeBetterThanSelf)
+		}
+		h.FastOrSlow.Update = false // turn off the test flag
+
+		h.FastOrSlow.frameStartTest += h.FastOrSlow.testDuration + idx.Frame(rand.Intn(int(h.validators.Len())*int(h.FastOrSlow.testDuration))) // select a frame to start the next test period
+
+		if h.FastOrSlow.frameStartTest > 3100 { // this is for testing purposes only, to ensure validator stop testing before the end of the simulation
+			h.FastOrSlow.frameStartTest = 99999999
 		}
 	}
 }
 
-func (h *QuorumIndexer) RankSelfPerformance() float64 {
+func (h *QuorumIndexer) RankSelfPerformance() (float64, uint32, int) {
+	// This function ranks the performance of self validator in comparison to all other validators.
+	// It outputs the fraction of stake that performs better that self, the stake that performs better than self
+	// the number of validators that performs better than self, and are in excess to quorum stake, i.e. dont count first quorum validators
+	// we use this to ensure a minimum number of validators in excess of quorum emit fast, to ensure that at least that many must be disrupted to significantly impact consensus
 
 	if !h.SelfParentEvent.IsZero() {
 		selfID := h.dagi.GetEvent(h.SelfParentEvent).Creator()
+		selfStake := h.validators.Get(selfID)
 		higherPerfStake := h.validators.NewCounter()
+		numExcess := 0 // the number of validators that are higher performance than self, but in excess of the number required for quorum stake
+
 		selfPerf := h.ValidatorPerformance(selfID)
 		for _, valID := range h.validators.IDs() {
-
+			// fmt.Println("Val: ", i)
+			valPerf := h.ValidatorPerformance(valID)
+			// fmt.Println(h.validators.GetIdx(valID), " Perf: ", valPerf)
 			if valID != selfID {
-				valPerf := h.ValidatorPerformance(valID)
-				// fmt.Println(h.validators.GetIdx(valID), ": ", valPerf)
-				if valPerf < selfPerf {
+
+				if valPerf < selfPerf { // validator performs better than self, smaller metric means higher performance
+					if higherPerfStake.HasQuorum() { // if there are already quorum validators, then count as excess
+						numExcess++
+					}
 					higherPerfStake.Count(valID)
-				}
-			}
-		}
-		return float64(higherPerfStake.Sum()) / float64(h.validators.TotalWeight())
-	}
-	return 0.0
-}
 
-func (h *QuorumIndexer) ValidatorPerformance(valID idx.ValidatorID) float64 {
-	// get a metric of the performance of a validator
-	// +++ TODO this could be improved to use some caching of previous calculations if this function is likely to be called at intervals less than numFramesForMetric
-	valIdx := h.validators.GetIdx(valID)
-	TotalStakeNotVal := float64(h.validators.TotalWeight() - h.validators.Get(valID))
-	metric := 0.0
-	var numFramesForMetric idx.Frame = 3
-	maxFrame := h.eventTiming.maxKnownFrame
-	var minFrame idx.Frame
-	if maxFrame > numFramesForMetric {
-		minFrame = maxFrame - numFramesForMetric + 1 //+++TODO HOW MANY FRAMES?
-	} else {
-		minFrame = 0
-	}
+				} else if valPerf == selfPerf { // if validators have equal performance to self
+					valStake := h.validators.Get(valID)
+					if valStake > selfStake { // prefer the larger staked validator
+						higherPerfStake.Count(valID)
 
-	for frame := maxFrame; frame >= minFrame && frame > 0; frame-- {
-		frameMetric := 0.0
-		eKnowsQRoots, found := h.FindEventKnowsQRoots(frame, valID)
-		if found {
-			kVal := h.progressTowardNewRoot(frame, eKnowsQRoots.ID(), nil)
-
-			lowestAfter := h.dagi.GetLowestAfter(eKnowsQRoots.ID())
-
-			for _, valIdxLA := range h.validators.Idxs() {
-				if valIdxLA != valIdx {
-					eventLASeq := lowestAfter.Get(valIdxLA) // sequence number of lowest after event
-
-					// use sequence number to find the event hash by starting at the highest known event
-					eventLA := h.eventTiming.validatorHighestEvents[valIdxLA].event
-					stakeLA := h.validators.GetWeightByIdx(valIdxLA)
-					if eventLASeq > 0 { // there is an event after
-						for ; eventLA.Seq() > eventLASeq; eventLA = h.dagi.GetEvent(*eventLA.SelfParent()) {
+						if higherPerfStake.HasQuorum() { // if there are already quorum validators, then count as excess
+							numExcess++
 						}
-						// the lowest after event may be in a later frame, so add contributions from all frames
-						kLA := 0.0
-						for f := frame; f <= eventLA.Frame(); f++ {
-							kLA += h.progressTowardNewRoot(frame, eventLA.ID(), nil)
-						}
-						frameMetric += (kLA - kVal) * float64(stakeLA) / (float64(maxFrame-frame) + 1.0 - kVal) / TotalStakeNotVal
-					} else { // there is not an event after
-						frameMetric += float64(stakeLA) / TotalStakeNotVal
 					}
 				}
 			}
-		} else {
-			frameMetric += 1.0 //float64(h.validators.Len()) * (float64(maxFrame-frame) + 1.0)
 		}
-		metric += frameMetric
+		return float64(higherPerfStake.Sum()) / float64(h.validators.TotalWeight()), uint32(higherPerfStake.Sum()), numExcess
 	}
-	return metric / float64(numFramesForMetric)
+	return 1.0, uint32(h.validators.TotalWeight()), 0
+}
+
+func (h *QuorumIndexer) ValidatorPerformance(valID idx.ValidatorID) float64 {
+	// the function calculates a metric for the performance of valID
+	// The metric is based on the root knowledge metric
+	// For a frame f, find the event e_q at which valID knows at least quorum roots of frame f.
+	// Sum the k metrics at which each validator has e_q in its subgraph
+	// Calculate this across a set of recent frames
+	// A lower metric means higher performance
+	// It is important for consensus for validators to know roots from other validators, hence
+	// the use of e_q.
+
+	TotalStake := float64(h.validators.TotalWeight())
+	metric := 0.0 // initialise the metric
+
+	//define the range of frames over which the metric is to be calculated
+	maxFrame := h.FastOrSlow.frameStartTest + h.FastOrSlow.testDuration
+	minFrame := h.FastOrSlow.frameStartTest + 2
+
+	// loop over range of frames
+	for frame := maxFrame; frame >= minFrame && frame > 0; frame-- {
+		// kRoot := 0.0
+		// roots := h.store.GetFrameRoots(frame)
+		// for _, root := range roots {
+		// 	if root.Slot.Validator == valID {
+		// 		rootDAG := h.dagi.GetEvent(root.ID)
+		// 		for f := frame; f <= rootDAG.Frame() && f <= maxFrame; f++ {
+		// 			kRoot += h.progressTowardNewRoot(f, root.ID, nil)
+		// 		}
+		// 		break
+		// 	}
+		// }
+
+		frameMetric := 0.0 // the metric for the current frame
+		// frameMetric = kRoot / (float64(maxFrame-frame) + 1.0)
+
+		eKnowsQRoots, found := h.FindEventKnowsQRoots(frame, valID) // find self's event that known quorum roots in the current frame
+		if found {
+			// found == true indicates that e_q exists for the current frame
+			// kVal := 0.0
+			// for f := frame; f <= eKnowsQRoots.Frame() && f <= maxFrame; f++ {
+			// 	kVal += h.progressTowardNewRoot(f, eKnowsQRoots.ID(), nil)
+			// }
+
+			lowestAfter := h.dagi.GetLowestAfter(eKnowsQRoots.ID()) // use LowestAfter of e_q to find events from each validator that have e_q in their subgraph
+
+			// loop over all validators
+			for _, valIdxLA := range h.validators.Idxs() {
+				eventLASeq := lowestAfter.Get(valIdxLA) // sequence number of lowest after event
+
+				// use sequence number to find the LowestAfter event hash by starting at the highest known event
+				eventLA := h.eventTiming.validatorHighestEvents[valIdxLA].event
+				stakeLA := h.validators.GetWeightByIdx(valIdxLA)
+				if eventLASeq > 0 { // there is an event the has e_q in its subgraph
+					// we have the LA event sequence number, but need the event ID
+					// starting from the highest known event, work backward until the LA event sequence number is found
+					for ; eventLA.Seq() > eventLASeq; eventLA = h.dagi.GetEvent(*eventLA.SelfParent()) {
+					}
+
+					// the lowest after event may be in a later frame, so add k metric contributions from all frames
+					kLA := 0.0
+					for f := frame; f <= eventLA.Frame() && f <= maxFrame; f++ {
+						kLA += h.progressTowardNewRoot(f, eventLA.ID(), nil)
+					}
+					// frameMetric += kLA / (float64(maxFrame-frame) + 1.0) * float64(stakeLA) / TotalStake
+					// frameMetric += (kLA - (kVal - kRoot)) / (float64(maxFrame-frame) + 1.0) * float64(stakeLA) / TotalStake
+					frameMetric += kLA * float64(stakeLA) / (float64(maxFrame-frame) + 1.0) / TotalStake // weight the metric by the validator stake, and normalise by number of frames (max k metric)
+				} else { // there is not an event that has e_q in its subgraph
+					// frameMetric += (float64(maxFrame-frame) + 1.0 - (kVal - kRoot)) / (float64(maxFrame-frame) + 1.0) * float64(stakeLA) / TotalStake
+					frameMetric += float64(stakeLA) / TotalStake // add the maximum metric
+				}
+			}
+		} else {
+			// found == false indicates that e_q does not exist for the current frame.
+			frameMetric += 1.0 // Set the maximum metric for this frame
+		}
+		metric += frameMetric // add each frame's contribution to the metric
+	}
+	return metric / float64(maxFrame-minFrame+1) // normalise the metric by the number of frames used in the calculation
 
 }
 
 func (h *QuorumIndexer) FindEventKnowsQRoots(frame idx.Frame, valID idx.ValidatorID) (dag.Event, bool) {
-	// find an event from validator that has quorum roots from frame in its subgraph
+	// find lowest event from validator that has quorum roots from frame in its subgraph
 	// +++TODO incorporate caching to improve performance if this function will be called frequently
 	// +++TODO problems with forks?
 	valIdx := h.validators.GetIdx(valID)
@@ -359,7 +453,7 @@ func (h *QuorumIndexer) ProcessEvent(event dag.Event, selfEvent bool, time int) 
 		h.eventTiming.validatorHighestEvents[creatorIdx].event = event
 		h.eventTiming.validatorHighestEvents[creatorIdx].time = time
 	}
-
+	h.CheckFastOrSlow()
 }
 
 func (h *QuorumIndexer) Choose(chosenParents hash.Events, candidateParents hash.Events) int {
@@ -759,7 +853,7 @@ func (h *QuorumIndexer) Threshold() uint32 {
 		}
 		firstCount = false
 	}
-	threshold = 4
+	// threshold = 4
 	return threshold
 }
 
@@ -869,7 +963,44 @@ func (h *QuorumIndexer) stakeThreshold() uint32 {
 	} else {
 		threshold = uint32(h.validators.TotalWeight() + 1) //anything above total weight, so that events cant't be created according to this condition
 	}
-	threshold = uint32(selfStake) + 1
+	// threshold = uint32(selfStake) + 1
+	return threshold
+}
+
+func (h *QuorumIndexer) largestStakeThreshold() uint32 {
+	selfID := h.dagi.GetEvent(h.SelfParentEvent).Creator()
+	selfStake := h.validators.GetWeightByIdx(h.validators.GetIdx(selfID))
+	sortedIDs := h.validators.SortedIDs()
+	sortedWeights := h.validators.SortedWeights()
+	fastCounter := h.validators.NewCounter()
+	fast := false
+	for _, ID := range sortedIDs {
+		if ID == selfID {
+			fast = true
+			break
+		}
+		fastCounter.Count(ID)
+		if float64(fastCounter.Sum()) > float64(h.validators.TotalWeight())*0.75 {
+			break
+		}
+	}
+
+	quorumValidator := 0
+	quorumCounter := h.validators.NewCounter()
+	for _, ID := range sortedIDs {
+		quorumValidator++
+		quorumCounter.Count(ID)
+		if quorumCounter.HasQuorum() {
+			break
+		}
+
+	}
+	var threshold uint32 = 0
+	if fast {
+		threshold = uint32(float64(h.validators.Quorum()) * float64(sortedWeights[quorumValidator]) / float64(selfStake)) //give larger stake validators a smaller threshold so they produce events faster than smaller stake validators
+	} else {
+		threshold = uint32(float64(h.validators.TotalWeight()) + 1)
+	}
 	return threshold
 }
 
@@ -1128,17 +1259,19 @@ func (h *QuorumIndexer) DAGProgressEventTimingCondition(chosenHeads hash.Events,
 	// if kGreaterCount >= h.Threshold() {
 	// 	return true // self should create a new event
 	// }
-	if uint32(kGreaterStake.Sum()) >= h.stakeThreshold() {
+	// if uint32(kGreaterStake.Sum()) >= h.stakeThreshold() {
+	// if uint32(kGreaterStake.Sum()) >= h.largestStakeThreshold() { // use thresholds according to stake only
+	if uint32(kGreaterStake.Sum()) >= h.FastOrSlowThreshold() { // use threshold determined by validator performance
 		// if kGreaterStake.Sum() >= h.validators.Quorum() {
 		if kNew > kPrev {
 			return true, kNew
 		} else {
 
-			if time > 100 {
-				fmt.Println("!!!KNEW<=KPREV!!!")
-				return true, kNew
-			}
-			fmt.Println("!!!KNEW<=KPREV!!!No Event!!!")
+			// if time > 100 {
+			// 	fmt.Println("!!!KNEW<=KPREV!!!")
+			// 	return true, kNew
+			// }
+			// fmt.Println("!!!KNEW<=KPREV!!!No Event!!!")
 		}
 		// return true // self should create a new event
 	}
