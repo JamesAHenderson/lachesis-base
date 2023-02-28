@@ -40,11 +40,37 @@ type cityLatency struct {
 	stdLatencies  [][]float64
 }
 
+type NetworkGas struct {
+	NetworkAllocPerMilliSecShort float64
+	NetworkAllocPerMilliSecLong  float64
+	MaxAllocPeriodShort          float64
+	MaxAllocPeriodLong           float64
+
+	StartupAllocPeriodLong  float64
+	StartupAllocPeriodShort float64
+	MinStartupGas           float64
+	MinEnsuredAlloc         float64
+
+	EventCreationGas float64
+	MaxEventGas      float64
+	ParentGas        float64
+}
+
+type ValidatorGas struct {
+	AvailableLongGas               float64
+	AvailableShortGas              float64
+	ValidatorAllocPerMilliSecShort float64
+	ValidatorAllocPerMilliSecLong  float64
+	MaxLongGas                     float64
+	MaxShortGas                    float64
+}
+
 type QITestEvents []*QITestEvent
 
 type QITestEvent struct {
 	tdag.TestEvent
-	creationTime int
+
+	// creationTime int
 }
 
 var mutex sync.Mutex // a mutex used for variables shared across go rountines
@@ -65,6 +91,20 @@ func TestQI(t *testing.T) {
 	randParentCount := 0                                                        // maximum number of parents selected randomly
 	offlineNodes := false                                                       // set to true to make smallest non-quourm validators offline
 
+	// Gas setup
+	var NetworkGas NetworkGas
+	NetworkGas.MaxAllocPeriodLong = 60 * 60 * 1000                           // 60 minutes in units of milliseconds
+	NetworkGas.MaxAllocPeriodShort = NetworkGas.MaxAllocPeriodLong / (2 * 6) // 5 minutes in units of milliseconds
+	NetworkGas.EventCreationGas = 28000
+	NetworkGas.NetworkAllocPerMilliSecLong = 100.0 / 1000.0 * NetworkGas.EventCreationGas
+	NetworkGas.NetworkAllocPerMilliSecShort = 2 * NetworkGas.NetworkAllocPerMilliSecLong
+	NetworkGas.MaxEventGas = 10000000 + NetworkGas.EventCreationGas
+	NetworkGas.ParentGas = 2400
+	NetworkGas.StartupAllocPeriodLong = 5000                                   // 5 seconds in units of milliseconds
+	NetworkGas.StartupAllocPeriodShort = NetworkGas.StartupAllocPeriodLong / 2 // 5/2 seconds in units of milliseconds
+	NetworkGas.MinStartupGas = 20 * NetworkGas.EventCreationGas
+	NetworkGas.MinEnsuredAlloc = NetworkGas.MaxEventGas
+
 	// Uncomment the desired latency type
 
 	// Latencies between validators are drawn from a Normal Gaussian distribution
@@ -84,13 +124,13 @@ func TestQI(t *testing.T) {
 	// var latency mainNetLatency
 	// maxLatency := latency.initialise()
 
-	simulationDuration := 1600000 // length of simulated time in milliseconds
+	var simulationDuration uint32 = 1000000 // length of simulated time in milliseconds
 
-	simulate(weights, QIParentCount, randParentCount, offlineNodes, &latency, maxLatency, simulationDuration)
+	simulate(weights, NetworkGas, QIParentCount, randParentCount, offlineNodes, &latency, maxLatency, simulationDuration)
 
 }
 
-func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offlineNodes bool, latency latency, maxLatency int, simulationDuration int) Results {
+func simulate(weights []pos.Weight, networkGas NetworkGas, QIParentCount int, randParentCount int, offlineNodes bool, latency latency, maxLatency int, simulationDuration uint32) Results {
 
 	numValidators := len(weights)
 
@@ -146,10 +186,55 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 		inputs[i] = *input
 		quorumIndexers[i] = *ancestor.NewQuorumIndexer(validators, lch)
 	}
-
-	// If requried set smallest non-quorum validators as offline for testing
+	// initialise largest quorum validators as fast
 	sortWeights := validators.SortedWeights()
 	sortedIDs := validators.SortedIDs()
+	for i := 0; i < numValidators; i++ {
+		selfStake := weights[i]
+		largerStake := validators.NewCounter()
+		for j, stake := range sortWeights {
+			if stake > selfStake {
+				largerStake.Count(sortedIDs[j])
+			} else {
+				break
+			}
+		}
+		if largerStake.HasQuorum() {
+			quorumIndexers[i].FastOrSlow.Fast = false
+		} else {
+			quorumIndexers[i].FastOrSlow.Fast = true
+		}
+
+	}
+
+	ValidatorGas := make([]ValidatorGas, numValidators)
+	for i, weight := range weights {
+
+		weightFrac := float64(weight) / float64(validators.TotalWeight())
+		ValidatorGas[i].ValidatorAllocPerMilliSecLong = networkGas.NetworkAllocPerMilliSecLong * weightFrac
+		ValidatorGas[i].MaxLongGas = networkGas.MaxAllocPeriodLong * ValidatorGas[i].ValidatorAllocPerMilliSecLong
+		if ValidatorGas[i].MaxLongGas < networkGas.MinEnsuredAlloc {
+			ValidatorGas[i].MaxLongGas = networkGas.MinEnsuredAlloc
+		}
+		ValidatorGas[i].ValidatorAllocPerMilliSecShort = networkGas.NetworkAllocPerMilliSecShort * weightFrac
+		ValidatorGas[i].MaxShortGas = networkGas.NetworkAllocPerMilliSecShort * ValidatorGas[i].ValidatorAllocPerMilliSecShort
+		if ValidatorGas[i].MaxShortGas < networkGas.MinEnsuredAlloc {
+			ValidatorGas[i].MaxShortGas = networkGas.MinEnsuredAlloc
+		}
+		// set storage levels of startup gas
+		ValidatorGas[i].AvailableLongGas = ValidatorGas[i].ValidatorAllocPerMilliSecLong * networkGas.StartupAllocPeriodLong
+		if ValidatorGas[i].AvailableLongGas < networkGas.MinStartupGas {
+			ValidatorGas[i].AvailableLongGas = networkGas.MinStartupGas
+		}
+		ValidatorGas[i].AvailableShortGas = ValidatorGas[i].ValidatorAllocPerMilliSecShort * networkGas.StartupAllocPeriodShort
+		if ValidatorGas[i].AvailableShortGas < networkGas.MinStartupGas {
+			ValidatorGas[i].AvailableShortGas = networkGas.MinStartupGas
+		}
+	}
+
+	// If requried set smallest non-quorum validators as offline for testing
+	// sortWeights := validators.SortedWeights()
+	// sortedIDs := validators.SortedIDs()
 	onlineStake := validators.TotalWeight()
 	online := make(map[idx.ValidatorID]bool)
 	for i := len(sortWeights) - 1; i >= 0; i-- {
@@ -161,12 +246,12 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 			}
 		}
 	}
-	minCheckInterval := 11 // minimum interval before re-checking if event can be created; currently 11 ms in go-opera
-	prevCheckTime := make([]int, numValidators)
-	minEventCreationInterval := make([]int, numValidators) // minimum interval between creating event
+	var minCheckInterval uint32 = 11 // minimum interval before re-checking if event can be created; currently 11 ms in go-opera
+	prevCheckTime := make([]uint32, numValidators)
+	minEventCreationInterval := make([]uint32, numValidators) // minimum interval between creating event
 	for i, _ := range minEventCreationInterval {
-		minEventCreationInterval[i] = int(30 * float64(weights[0]) / float64(weights[i])) // scale minimum emission interval with stake, so that large validators can emit more frequently; roughly approximates available gas
-		// minEventCreationInterval[i] = minCheckInterval // 11 ms is the current go-opera interval for checking if a new event shoudl be emitted
+		// minEventCreationInterval[i] = uint32(30 * float64(weights[0]) / float64(weights[i])) // scale minimum emission interval with stake, so that large validators can emit more frequently; roughly approximates available gas
+		minEventCreationInterval[i] = minCheckInterval // 11 ms is the current go-opera interval for checking if a new event shoudl be emitted
 		// if i == 2 { // chosse a validator that misbehaves
 		// 	minEventCreationInterval[i] = 1000 //rand.Intn(10000) // make minimum emission interval large to simulate a misbehaving validator
 		// }
@@ -194,7 +279,8 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 	wg := sync.WaitGroup{} // used for parallel go routines
 
 	timeIdx := maxLatency - 1 // circular buffer time index
-	simTime := -1             // counts simulated time
+	var simTime uint32        // counts simulated time
+	simTime = 0
 
 	// now start the simulation
 	for simTime < simulationDuration {
@@ -354,61 +440,74 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 						copy(id[:], hasher.Sum(nil)[:24])
 						e.SetID(id)
 						hash.SetEventName(e.ID(), fmt.Sprintf("%03d%04d", self, e.Seq()))
-						e.creationTime = simTime
+						e.SetCreationTime(simTime)
+
+						// amount of gas used by the candidate event
 
 						createRandEvent := randEvRNG[self].Float64() < randEvRate // used for introducing randomly created events
+
 						if online[selfID] == true {
 							// self is online
-							passedTime := simTime - selfParent[self].creationTime
+							passedTime := simTime - selfParent[self].CreationTime()
+
 							if passedTime > minEventCreationInterval[self] {
-								eTiming := false
-								// kNew := 0
-								if !isLeaf[self] {
-									eTiming, _ = quorumIndexers[self].DAGProgressEventTimingCondition(e.Parents(), online, passedTime)
-								}
-								if createRandEvent || isLeaf[self] || eTiming {
-									// mutex.Lock()
-									// stakeAbove, numAbove := quorumIndexers[self].RankSelfPerformance()
-									// var maxFrame idx.Frame = 0
-									// for _, events := range headsAll {
-									// 	for _, event := range events {
-									// 		if event.Frame() > maxFrame {
-									// 			maxFrame = event.Frame()
-									// 		}
-									// 	}
-									// }
-									// fmt.Println(self, ": StakeAbove: ", stakeAbove, " NumAbove: ", numAbove, " Fast: ", quorumIndexers[self].FastOrSlow.Fast, " Testing: ", quorumIndexers[self].FastOrSlow.Testing, " MaxFrame:", maxFrame)
-									// mutex.Unlock()
-									//create an event if (i)a random event is created (ii) is a leaf event, or (iii) event timing condition is met
-									isLeaf[self] = false // only create one leaf event
-									//now start propagation of event to other nodes
-									delay := 1
-									for receiveNode := 0; receiveNode < numValidators; receiveNode++ {
-										if receiveNode == self {
-											delay = 1 // no delay to send to self (self will 'recieve' its own event after time increment at the top of the main loop)
-										} else {
-											delay = latency.latency(self, receiveNode, latencyRNG[self])
-											// check delay is within min and max bounds
-											if delay < 1 {
-												delay = 1
+								e.SetMedianTime(quorumIndexers[self].EventMedianTime(e))
+								gasUsed := 0.0 //networkGas.EventCreationGas + float64(len(e.Parents()))*networkGas.ParentGas
+								sufficientGas := sufficientGas(e, &lchs[self], &quorumIndexers[self], &ValidatorGas[self], gasUsed)
+								if sufficientGas {
+									// fmt.Println("sufficient gas")
+									eTiming := false
+									// kNew := 0
+									if !isLeaf[self] {
+										eTiming, _ = quorumIndexers[self].DAGProgressEventTimingCondition(e.Parents(), online, passedTime)
+									}
+									maxPassedTime := passedTime > 5000 // max 5 second interval between events
+									if createRandEvent || isLeaf[self] || eTiming || maxPassedTime {
+
+										// mutex.Lock()
+										// stakeAbove, numAbove := quorumIndexers[self].RankSelfPerformance()
+										// var maxFrame idx.Frame = 0
+										// for _, events := range headsAll {
+										// 	for _, event := range events {
+										// 		if event.Frame() > maxFrame {
+										// 			maxFrame = event.Frame()
+										// 		}
+										// 	}
+										// }
+										// fmt.Println(self, ": StakeAbove: ", stakeAbove, " NumAbove: ", numAbove, " Fast: ", quorumIndexers[self].FastOrSlow.Fast, " Testing: ", quorumIndexers[self].FastOrSlow.Testing, " MaxFrame:", maxFrame)
+										// mutex.Unlock()
+										//create an event if (i)a random event is created (ii) is a leaf event, or (iii) event timing condition is met
+										isLeaf[self] = false                                    // only create one leaf event
+										updateGas(e, &lchs[self], &ValidatorGas[self], gasUsed) // update creator's gas
+										//now start propagation of event to other nodes
+										delay := 1
+										for receiveNode := 0; receiveNode < numValidators; receiveNode++ {
+											if receiveNode == self {
+												delay = 1 // no delay to send to self (self will 'recieve' its own event after time increment at the top of the main loop)
+											} else {
+												delay = latency.latency(self, receiveNode, latencyRNG[self])
+												// check delay is within min and max bounds
+												if delay < 1 {
+													delay = 1
+												}
+												if delay >= maxLatency {
+													delay = maxLatency - 1
+												}
 											}
-											if delay >= maxLatency {
-												delay = maxLatency - 1
-											}
+											receiveTime := (timeIdx + delay) % maxLatency // time index for the circular buffer
+											mutex.Lock()
+											eventPropagation[receiveTime][self][receiveNode] = append(eventPropagation[receiveTime][self][receiveNode], e) // add the event to the buffer
+											mutex.Unlock()
 										}
-										receiveTime := (timeIdx + delay) % maxLatency // time index for the circular buffer
-										mutex.Lock()
-										eventPropagation[receiveTime][self][receiveNode] = append(eventPropagation[receiveTime][self][receiveNode], e) // add the event to the buffer
-										mutex.Unlock()
+
+										eventsComplete[self]++ // increment count of events created for this node
+										selfParent[self] = *e  //update self parent to be this new event
+
+										// fmt.Print(kNew, ",")
+										// kEvents[self] = append(kEvents[self], kNew)
 									}
 
-									eventsComplete[self]++ // increment count of events created for this node
-									selfParent[self] = *e  //update self parent to be this new event
-
-									// fmt.Print(kNew, ",")
-									// kEvents[self] = append(kEvents[self], kNew)
 								}
-
 							}
 						}
 					}
@@ -423,6 +522,7 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 	fmt.Println("")
 	var stake pos.Weight
 	var fastStake pos.Weight
+	numFast := 0
 
 	for self := 0; self < numValidators; self++ {
 
@@ -430,9 +530,10 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 		stake += weights[self]
 		if quorumIndexers[self].FastOrSlow.Fast && !quorumIndexers[self].FastOrSlow.Update {
 			fastStake += weights[self]
+			numFast++
 		}
 	}
-	fmt.Println("Fast Stake: ", float64(fastStake)/float64(validators.TotalWeight()))
+	fmt.Println("Fast Stake: ", float64(fastStake)/float64(validators.TotalWeight()), " Num Fast: ", numFast)
 	// fmt.Println("Simulated time ", float64(simTime)/1000.0, " seconds")
 	// fmt.Println("Number of nodes: ", numValidators)
 	numOnlineNodes := 0
@@ -464,7 +565,7 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 	fmt.Println(" Number of Events: ", totalEventsComplete)
 
 	fmt.Println("Event rate per (online) node: ", float64(totalEventsComplete)/float64(numOnlineNodes)/(float64(simTime)/1000.0))
-	// fmt.Println("[Indictor of gas efficiency] Average events per frame per (online) node: ", (float64(totalEventsComplete))/(float64(maxFrame)*float64(numOnlineNodes)))
+	fmt.Println("[Indictor of gas efficiency] Average events per frame per (online) node: ", (float64(totalEventsComplete))/(float64(maxFrame)))
 
 	// fmt.Println("kEvents=np.array([")
 	// for validator, kVals := range kEvents {
@@ -492,6 +593,82 @@ func simulate(weights []pos.Weight, QIParentCount int, randParentCount int, offl
 
 }
 
+func updateGas(event *QITestEvent, lch *abft.TestLachesis, validatorGas *ValidatorGas, gasUsed float64) {
+	if (*event).SelfParent() != nil {
+		eventMedianTime := event.MedianTime()
+		// event is a non-leaf event
+		selfParent := (*event).SelfParent()
+		selfParentEvent := lch.DagIndex.GetEvent(*selfParent)
+		selfParentMedianTime := selfParentEvent.MedianTime() //quorumIndexer.EventMedianTime(selfParentEvent)
+
+		var millisecondsElapsed uint32
+		if eventMedianTime > selfParentMedianTime { // needs to be positive time difference; new event comes after self parent
+			millisecondsElapsed = eventMedianTime - selfParentMedianTime
+		}
+
+		// update gas based on time difference
+		newAllocatedGasLong := millisecondsElapsed * uint32(validatorGas.ValidatorAllocPerMilliSecLong)
+		availableGasLong := validatorGas.AvailableLongGas + float64(newAllocatedGasLong)
+		if availableGasLong > validatorGas.MaxLongGas {
+			availableGasLong = validatorGas.MaxLongGas
+		}
+
+		newAllocatedGasShort := millisecondsElapsed * uint32(validatorGas.ValidatorAllocPerMilliSecShort)
+		availableGasShort := validatorGas.AvailableShortGas + float64(newAllocatedGasShort)
+		if availableGasShort > validatorGas.MaxShortGas {
+			availableGasShort = validatorGas.MaxShortGas
+		}
+
+		validatorGas.AvailableLongGas = availableGasLong - gasUsed
+		validatorGas.AvailableShortGas = availableGasShort - gasUsed
+		// validators := lch.Store.GetValidators()
+		// fracWeight := float64(validators.Get(event.Creator())) / float64(validators.TotalWeight())
+		// fmt.Println(" Validator % stake: ", fracWeight, " Used: ", gasUsed, " Remaining long gas: ", validatorGas.AvailableLongGas, " Remaining short gas: ", validatorGas.AvailableShortGas)
+
+	}
+}
+
+func sufficientGas(event *QITestEvent, lch *abft.TestLachesis, quorumIndexer *ancestor.QuorumIndexer, validatorGas *ValidatorGas, gasUsed float64) bool {
+
+	if (*event).SelfParent() != nil {
+		eventMedianTime := quorumIndexer.EventMedianTime(event)
+		event.SetMedianTime(eventMedianTime)
+		// event is a non-leaf event
+		selfParent := (*event).SelfParent()
+		selfParentEvent := lch.DagIndex.GetEvent(*selfParent)
+		selfParentMedianTime := selfParentEvent.MedianTime() //quorumIndexer.EventMedianTime(selfParentEvent)
+
+		var millisecondsElapsed uint32
+		if eventMedianTime > selfParentMedianTime {
+			millisecondsElapsed = eventMedianTime - selfParentMedianTime
+		}
+
+		// update gas based on time difference
+		newAllocatedGasLong := millisecondsElapsed * uint32(validatorGas.ValidatorAllocPerMilliSecLong)
+		availableGasLong := validatorGas.AvailableLongGas + float64(newAllocatedGasLong)
+		if availableGasLong > validatorGas.MaxLongGas {
+			availableGasLong = validatorGas.MaxLongGas
+		}
+
+		newAllocatedGasShort := millisecondsElapsed * uint32(validatorGas.ValidatorAllocPerMilliSecShort)
+		availableGasShort := validatorGas.AvailableShortGas + float64(newAllocatedGasShort)
+		if availableGasShort > validatorGas.MaxShortGas {
+			availableGasShort = validatorGas.MaxShortGas
+		}
+
+		// both long and short gas must be available
+		if availableGasLong >= gasUsed && availableGasShort > gasUsed {
+			// the validator has sufficient gas to create the event
+			return true
+		}
+		return false // the validator does not have sufficient gas to create the event
+	} else {
+		//event is a leaf event
+		return true
+	}
+
+}
+
 func updateHeads(newEvent dag.Event, heads *dag.Events) {
 	// remove newEvent's parents from heads
 	for _, parent := range newEvent.Parents() {
@@ -506,7 +683,7 @@ func updateHeads(newEvent dag.Event, heads *dag.Events) {
 	*heads = append(*heads, newEvent) //add newEvent to heads
 }
 
-func processEvent(input abft.EventStore, lchs *abft.TestLachesis, e *QITestEvent, quorumIndexer *ancestor.QuorumIndexer, heads *dag.Events, self idx.ValidatorID, time int) (frame idx.Frame) {
+func processEvent(input abft.EventStore, lchs *abft.TestLachesis, e *QITestEvent, quorumIndexer *ancestor.QuorumIndexer, heads *dag.Events, self idx.ValidatorID, time uint32) (frame idx.Frame) {
 	input.SetEvent(e)
 
 	lchs.DagIndexer.Add(e)
@@ -515,7 +692,7 @@ func processEvent(input abft.EventStore, lchs *abft.TestLachesis, e *QITestEvent
 
 	lchs.DagIndexer.Flush()
 	// quorum indexer needs to process the event
-	quorumIndexer.ProcessEvent(&e.BaseEvent, self == e.Creator(), e.creationTime)
+	quorumIndexer.ProcessEvent(&e.BaseEvent, self == e.Creator(), e.CreationTime())
 
 	updateHeads(e, heads)
 	return lchs.DagIndexer.GetEvent(e.ID()).Frame()

@@ -23,6 +23,9 @@ type Event interface {
 	String() string
 
 	Size() int
+
+	CreationTime() uint32
+	MedianTime() uint32
 }
 
 type MutableEvent interface {
@@ -36,6 +39,8 @@ type MutableEvent interface {
 	SetParents(hash.Events)
 
 	SetID(id [24]byte)
+	SetCreationTime(uint32)
+	SetMedianTime(uint32)
 }
 
 // BaseEvent is the consensus message in the Lachesis consensus algorithm
@@ -55,6 +60,9 @@ type BaseEvent struct {
 	lamport idx.Lamport
 
 	id hash.Event
+
+	creationTime uint32
+	medianTime   uint32
 }
 
 type MutableBaseEvent struct {
@@ -99,6 +107,9 @@ func (e *BaseEvent) IsSelfParent(hash hash.Event) bool {
 	return *e.SelfParent() == hash
 }
 
+func (e *BaseEvent) CreationTime() uint32 { return e.creationTime }
+func (e *BaseEvent) MedianTime() uint32   { return e.medianTime }
+
 func (e *BaseEvent) Epoch() idx.Epoch { return e.epoch }
 
 func (e *BaseEvent) Seq() idx.Event { return e.seq }
@@ -114,6 +125,9 @@ func (e *BaseEvent) Lamport() idx.Lamport { return e.lamport }
 func (e *BaseEvent) ID() hash.Event { return e.id }
 
 func (e *BaseEvent) Size() int { return 4 + 4 + 4 + 4 + len(e.parents)*32 + 4 + 32 }
+
+func (e *MutableBaseEvent) SetCreationTime(t uint32) { e.creationTime = t }
+func (e *MutableBaseEvent) SetMedianTime(t uint32)   { e.medianTime = t }
 
 func (e *MutableBaseEvent) SetEpoch(v idx.Epoch) { e.epoch = v }
 
