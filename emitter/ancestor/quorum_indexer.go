@@ -288,9 +288,9 @@ func (h *QuorumIndexer) Performance() {
 			prevFast := h.FastOrSlow.Fast //record previous state
 			h.FastOrSlow.Fast = false     // default to slow
 
-			higherPerfStakeFrac, _, numExcess, higherPerfValIDs := h.calculateSelfPerformance(h.FastOrSlow.randomPhase.measurementStart, h.FastOrSlow.randomPhase.measurementEnd-frameRange-1, frameRange)
+			_, higherPerfStake, numExcess, higherPerfValIDs := h.calculateSelfPerformance(h.FastOrSlow.randomPhase.measurementStart, h.FastOrSlow.randomPhase.measurementEnd-frameRange-1, frameRange)
 			h.FastOrSlow.randomPhase.higherPerfValIDs = higherPerfValIDs
-			if higherPerfStakeFrac < float64(h.FastOrSlow.minFastStake) { // +++TODO choose appropriate value here
+			if higherPerfStake < uint32(h.FastOrSlow.minFastStake) { // +++TODO choose appropriate value here
 				// insufficient stake of higher performing validators
 				h.FastOrSlow.Fast = true // set self as fast
 				if !prevFast {
@@ -313,6 +313,7 @@ func (h *QuorumIndexer) Performance() {
 	}
 
 	if h.FastOrSlow.globalPhase.measurementPending { // check if a global phase measurement calculation is pending to confirm change from fast to slow
+		// fmt.Println("Global Measurement Phase")
 		if h.store.GetLastDecidedFrame() >= h.FastOrSlow.globalPhase.measurementEnd { // check if DAG is ready for performance measurement calculation
 
 			_, _, _, higherPerfValIDs := h.calculateSelfPerformance(h.FastOrSlow.globalPhase.measurementStart, h.FastOrSlow.globalPhase.measurementEnd-frameRange-1, frameRange)
@@ -842,7 +843,7 @@ func (h *QuorumIndexer) ProcessEvent(event dag.Event, selfEvent bool, time uint3
 	}
 	if event.Frame() > h.eventTiming.maxKnownFrame {
 		if print {
-			fmt.Println("New maxframe: ", event.Frame(), " Old maxFrame: ", h.eventTiming.maxKnownFrame)
+			fmt.Println("New maxframe: ", event.Frame())
 		}
 		h.eventTiming.maxKnownFrame = event.Frame()        // record the maximum known frame
 		h.FastOrSlow.newFrame(h.eventTiming.maxKnownFrame) // update performance measurement
@@ -868,7 +869,7 @@ func (h *QuorumIndexer) ProcessEvent(event dag.Event, selfEvent bool, time uint3
 		h.eventTiming.validatorHighestEvents[creatorIdx].event = event
 		h.eventTiming.validatorHighestEvents[creatorIdx].time = time
 	}
-	h.Performance()
+	// h.Performance()
 }
 
 func (h *QuorumIndexer) Choose(chosenParents hash.Events, candidateParents hash.Events) int {
@@ -1268,7 +1269,7 @@ func (h *QuorumIndexer) Threshold() uint32 {
 		}
 		firstCount = false
 	}
-	// threshold = 4
+
 	return threshold
 }
 
@@ -1667,8 +1668,8 @@ func (h *QuorumIndexer) DAGProgressEventTimingCondition(chosenHeads hash.Events,
 	// }
 	// if uint32(kGreaterStake.Sum()) >= h.stakeThreshold() {
 	// if uint32(kGreaterStake.Sum()) >= h.largestStakeThreshold() { // use thresholds according to stake only
-	if uint32(kGreaterStake.Sum()) >= h.FastOrSlowThreshold() { // use threshold determined by validator performance
-		// if kGreaterStake.Sum() >= h.validators.Quorum() {
+	// if uint32(kGreaterStake.Sum()) >= h.FastOrSlowThreshold() { // use threshold determined by validator performance
+	if kGreaterStake.Sum() >= h.validators.Quorum() {
 		if kNew > kPrev {
 			return true, kNew
 		} else {
