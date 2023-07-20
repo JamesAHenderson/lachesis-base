@@ -9,7 +9,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/Fantom-foundation/go-opera/utils/rate"
 	"github.com/Fantom-foundation/lachesis-base/emitter/ancestor"
 	"github.com/Fantom-foundation/lachesis-base/hash"
 	"github.com/Fantom-foundation/lachesis-base/inter/dag"
@@ -234,7 +233,6 @@ func simulate(weights []pos.Weight, FCQIParentCount int, randParentCount int, of
 	//setup nodes
 	nodes := tdag.GenNodes(numValidators)
 	validators := pos.ArrayToValidators(nodes, weights)
-	busyRate := rate.NewGauge()
 	inputs := make([]EventStore, numValidators)
 	lchs := make([]*SimLachesis, numValidators)
 
@@ -530,7 +528,7 @@ func simulate(weights []pos.Weight, FCQIParentCount int, randParentCount int, of
 									gasOK = true //sufficientGas(e, &lchs[self], &quorumIndexers[self], &ValidatorGas[self], gasUsed)
 								}
 								if gasOK {
-									if createRandEvent || isLeaf[self] || readyToEmit(FCNotQI, validators, busyRate, times, pastMe, fcIndexers[self], qiIndexers[self], e, stakeRatios[e.Creator()]) {
+									if createRandEvent || isLeaf[self] || readyToEmit(FCNotQI, validators, times, pastMe, fcIndexers[self], qiIndexers[self], e, stakeRatios[e.Creator()]) {
 										//create an event if (i)a random event is created (ii) is a leaf event, or (iii) event timing condition is met
 										isLeaf[self] = false // only create one leaf event
 										if networkGas.UseGas {
@@ -743,7 +741,7 @@ func isAllowedToEmit(passedTime int, stakeRatio uint64, metric ancestor.Metric) 
 }
 
 // Approximates go-opera conditions for event emission
-func readyToEmit(FCNotQI bool, validators *pos.Validators, busyRate *rate.Gauge, times emissionTimes, pastMe pos.Weight, fcIndexer *ancestor.FCIndexer, qiIndexer *ancestor.QuorumIndexer, e dag.Event, stakeRatio uint64) (ready bool) {
+func readyToEmit(FCNotQI bool, validators *pos.Validators, times emissionTimes, pastMe pos.Weight, fcIndexer *ancestor.FCIndexer, qiIndexer *ancestor.QuorumIndexer, e dag.Event, stakeRatio uint64) (ready bool) {
 	var metric ancestor.Metric
 	if FCNotQI {
 		metric = (ancestor.Metric(pastMe) * piecefunc.DecimalUnit) / ancestor.Metric(validators.TotalWeight())
@@ -759,11 +757,11 @@ func readyToEmit(FCNotQI bool, validators *pos.Validators, busyRate *rate.Gauge,
 		if !fcIndexer.RootKnowledgeIncrease(e.Parents()) {
 			metric /= 15
 		}
-		metric = overheadAdjustedEventMetricF(validators.Len(), uint64(busyRate.Rate1()*piecefunc.DecimalUnit), metric)
+		metric = overheadAdjustedEventMetricF(validators.Len(), uint64(1*piecefunc.DecimalUnit), metric) // busyRate assumed to be 1
 
 	} else {
 		metric = eventMetric(qiIndexer.GetMetricOf(e.Parents()), e.Seq())
-		metric = overheadAdjustedEventMetricF(validators.Len(), uint64(busyRate.Rate1()*piecefunc.DecimalUnit), metric)
+		metric = overheadAdjustedEventMetricF(validators.Len(), uint64(1*piecefunc.DecimalUnit), metric) // busyRate assumed to be 1
 	}
 	if !FCNotQI || !KOnly {
 		passedTime := times.nowTime - times.prevTime
