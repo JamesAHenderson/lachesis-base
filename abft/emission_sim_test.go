@@ -96,7 +96,7 @@ var KOnly bool = false
 
 // Configures a simulation of Lachesis consensus
 func Benchmark_Emission(b *testing.B) {
-	numNodes := 40
+	numNodes := 20
 	stakeDist := stakeCumDist()             // for stakes drawn from distribution
 	stakeRNG := rand.New(rand.NewSource(0)) // for stakes drawn from distribution
 
@@ -107,7 +107,7 @@ func Benchmark_Emission(b *testing.B) {
 		// weights[i] = pos.Weight(1)                               //for equal stake
 	}
 	sort.Slice(weights, func(i, j int) bool { return weights[i] > weights[j] }) // sort weights in order
-	FCParentCount := 3                                                          // maximum number of parents selected by FC indexer
+	FCParentCount := 10                                                         // maximum number of parents selected by FC indexer
 	randParentCount := 0                                                        // maximum number of parents selected randomly
 	offlineNodes := false                                                       // set to true to make smallest non-quourm validators offline
 
@@ -178,18 +178,18 @@ func Benchmark_Emission(b *testing.B) {
 	fmt.Println("Max Latency: ", maxLatency)
 	simulationDuration := 50000 // length of simulated time in milliseconds
 
-	FCNotQI := true // uses FC parent selection and event timing
-	// FCNotQI := false //uses QI parent selection and event timing
+	UseFCNotQI := true // uses FC parent selection and event timing
+	// UseFCNotQI := false //uses QI parent selection and event timing
 	// Now run the simulation
 	KOnly = true
-	simulate(weights, FCParentCount, randParentCount, offlineNodes, &simLatency, maxLatency, simulationDuration, FCNotQI, NetworkGas)
+	simulate(weights, FCParentCount, randParentCount, offlineNodes, &simLatency, maxLatency, simulationDuration, UseFCNotQI, NetworkGas)
 	KOnly = false
-	simulate(weights, FCParentCount, randParentCount, offlineNodes, &simLatency, maxLatency, simulationDuration, FCNotQI, NetworkGas)
-	FCNotQI = false //uses QI parent selection and event timing
-	simulate(weights, FCParentCount, randParentCount, offlineNodes, &simLatency, maxLatency, simulationDuration, FCNotQI, NetworkGas)
+	simulate(weights, FCParentCount, randParentCount, offlineNodes, &simLatency, maxLatency, simulationDuration, UseFCNotQI, NetworkGas)
+	UseFCNotQI = false //uses QI parent selection and event timing
+	simulate(weights, FCParentCount, randParentCount, offlineNodes, &simLatency, maxLatency, simulationDuration, UseFCNotQI, NetworkGas)
 }
 
-func simulate(weights []pos.Weight, FCQIParentCount int, randParentCount int, offlineNodes bool, latency *latencyI, maxLatency int, simulationDuration int, FCNotQI bool, networkGas NetworkGas) Results {
+func simulate(weights []pos.Weight, FCQIParentCount int, randParentCount int, offlineNodes bool, latency *latencyI, maxLatency int, simulationDuration int, UseFCNotQI bool, networkGas NetworkGas) Results {
 	// This function simulates the operation of a distributed network of validators. The simulation can be used to develop and test methods for improving Lachesis consensus.
 	numValidators := len(weights)
 
@@ -242,14 +242,19 @@ func simulate(weights []pos.Weight, FCQIParentCount int, randParentCount int, of
 	diffMetricFn := func(median, current, update idx.Event, validatorIdx idx.Validator) ancestor.Metric {
 		return updMetric(median, current, update, validatorIdx, validators)
 	}
+
+	spammer := make([]bool, numValidators)
 	for i := 0; i < numValidators; i++ {
 		lch, _, input, dagIndexer := SimulatorLachesis(nodes, weights)
 		lchs[i] = lch
 		inputs[i] = *input
 		// lchs[i].confirmationTimer = &confirmationTimers[i]
-
-		if FCNotQI {
-			fcIndexers[i] = ancestor.NewFCIndexer(validators, dagIndexer, nodes[i])
+		spammer[i] = false
+		// if i == 1 {
+		// 	spammer[i] = true
+		// }
+		if UseFCNotQI {
+			fcIndexers[i] = ancestor.NewFCIndexer(validators, dagIndexer, input.GetEvent, nodes[i], spammer[i])
 		} else {
 			qiIndexers[i] = ancestor.NewQuorumIndexer(validators, lch.dagIndex, diffMetricFn)
 		}
@@ -264,7 +269,7 @@ func simulate(weights []pos.Weight, FCQIParentCount int, randParentCount int, of
 	for i := len(sortWeights) - 1; i >= 0; i-- {
 		online[sortedIDs[i]] = true
 		if offlineNodes {
-			if float64(onlineStake-sortWeights[i]) >= 0.8*float64(validators.TotalWeight()) { //validators.Quorum() {
+			if float64(onlineStake-sortWeights[i]) >= 0.67*float64(validators.TotalWeight()) { //validators.Quorum() {
 				onlineStake -= sortWeights[i]
 				online[sortedIDs[i]] = false
 			}
@@ -372,7 +377,7 @@ func simulate(weights []pos.Weight, FCQIParentCount int, randParentCount int, of
 					if process[i] {
 						// buffered event has all parents in the DAG and can now be processed
 						mutex.Lock()
-						processEvent(inputs[receiveNode], lchs[receiveNode], buffEvent, fcIndexers[receiveNode], qiIndexers[receiveNode], &headsAll[receiveNode], nodes[receiveNode], simTime, FCNotQI)
+						processEvent(inputs[receiveNode], lchs[receiveNode], buffEvent, fcIndexers[receiveNode], qiIndexers[receiveNode], &headsAll[receiveNode], nodes[receiveNode], simTime, UseFCNotQI)
 						// check for different Atropos
 						var maxKey BlockKey
 						for key, _ := range lchs[receiveNode].blocks {
@@ -459,8 +464,9 @@ func simulate(weights []pos.Weight, FCQIParentCount int, randParentCount int, of
 									break
 								}
 								var best int
-								if FCNotQI {
+								if UseFCNotQI {
 									best = fcIndexers[self].SearchStrategy().Choose(parents.IDs(), heads.IDs())
+
 								} else {
 									best = qiIndexers[self].SearchStrategy().Choose(parents.IDs(), heads.IDs())
 								}
@@ -469,6 +475,9 @@ func simulate(weights []pos.Weight, FCQIParentCount int, randParentCount int, of
 								// remove chosen parent from head options
 								heads[best] = heads[len(heads)-1]
 								heads = heads[:len(heads)-1]
+								if spammer[self] {
+									heads = heads[:0] // spammer validator only chooses one parent
+								}
 							}
 
 							// now select random parents
@@ -512,7 +521,7 @@ func simulate(weights []pos.Weight, FCQIParentCount int, randParentCount int, of
 							passedTime := simTime - selfParent[self].creationTime
 							if passedTime > minEventCreationInterval[self] {
 								var pastMe pos.Weight
-								if FCNotQI {
+								if UseFCNotQI {
 									pastMe = fcIndexers[self].ValidatorsPastMe()
 								}
 								gasOK := true
@@ -528,7 +537,7 @@ func simulate(weights []pos.Weight, FCQIParentCount int, randParentCount int, of
 									gasOK = true //sufficientGas(e, &lchs[self], &quorumIndexers[self], &ValidatorGas[self], gasUsed)
 								}
 								if gasOK {
-									if createRandEvent || isLeaf[self] || readyToEmit(FCNotQI, validators, times, pastMe, fcIndexers[self], qiIndexers[self], e, stakeRatios[e.Creator()]) {
+									if createRandEvent || isLeaf[self] || readyToEmit(UseFCNotQI, validators, times, pastMe, fcIndexers[self], qiIndexers[self], e, stakeRatios[e.Creator()], spammer[self]) {
 										//create an event if (i)a random event is created (ii) is a leaf event, or (iii) event timing condition is met
 										isLeaf[self] = false // only create one leaf event
 										if networkGas.UseGas {
@@ -584,7 +593,7 @@ func simulate(weights []pos.Weight, FCQIParentCount int, randParentCount int, of
 		}
 	}
 	fmt.Println("Number of nodes online: ", numOnlineNodes)
-	if FCNotQI {
+	if UseFCNotQI {
 		fmt.Println("Using FC indexer, KOnly", KOnly)
 	} else {
 		fmt.Println("Using quorum indexer")
@@ -741,8 +750,9 @@ func isAllowedToEmit(passedTime int, stakeRatio uint64, metric ancestor.Metric) 
 }
 
 // Approximates go-opera conditions for event emission
-func readyToEmit(FCNotQI bool, validators *pos.Validators, times emissionTimes, pastMe pos.Weight, fcIndexer *ancestor.FCIndexer, qiIndexer *ancestor.QuorumIndexer, e dag.Event, stakeRatio uint64) (ready bool) {
+func readyToEmit(FCNotQI bool, validators *pos.Validators, times emissionTimes, pastMe pos.Weight, fcIndexer *ancestor.FCIndexer, qiIndexer *ancestor.QuorumIndexer, e dag.Event, stakeRatio uint64, spammer bool) (ready bool) {
 	var metric ancestor.Metric
+
 	if FCNotQI {
 		metric = (ancestor.Metric(pastMe) * piecefunc.DecimalUnit) / ancestor.Metric(validators.TotalWeight())
 
@@ -767,7 +777,12 @@ func readyToEmit(FCNotQI bool, validators *pos.Validators, times emissionTimes, 
 		passedTime := times.nowTime - times.prevTime
 		return isAllowedToEmit(passedTime, stakeRatio, metric)
 	} else {
-		return pastMe >= validators.Quorum() && fcIndexer.RootKnowledgeIncrease(e.Parents())
+		if spammer {
+			return fcIndexer.RootKnowledgeIncrease(e.Parents()) && fcIndexer.HighestBeforeRootKnowledgeIncrease(*e.SelfParent(), e.Parents()).HasQuorum() // spammer validator will try to spam events by emitting whenever it can increase DAG progress metric
+		}
+		// return pastMe >= validators.Quorum() && fcIndexer.RootKnowledgeIncrease(e.Parents()) && fcIndexer.HighestBeforeRootKnowledgeIncrease(*e.SelfParent(), e.Parents())
+		// return fcIndexer.HighestBeforeSeqIncrease(*e.SelfParent(), e.Parents()).HasQuorum() && fcIndexer.RootKnowledgeIncrease(e.Parents())
+		return fcIndexer.HighestBeforeRootKnowledgeIncreaseAboveSelfParent(*e.SelfParent(), e.Parents()).HasQuorum() && fcIndexer.RootKnowledgeIncrease(e.Parents())
 	}
 
 }
