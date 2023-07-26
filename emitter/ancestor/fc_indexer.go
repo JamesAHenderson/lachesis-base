@@ -52,21 +52,29 @@ type FCIndexer struct {
 	highestEvents map[idx.ValidatorID]highestEvent
 
 	searchStrategy SearchStrategy
+
+	getEvent func(hash.Event) dag.Event
 }
 
 type DagIndex interface {
 	ForklessCauseProgress(aID, bID hash.Event, candidateParents, chosenParents hash.Events) (*pos.WeightCounter, []*pos.WeightCounter)
+	HighestBefore(hash.Events) []idx.Event
 }
 
-func NewFCIndexer(validators *pos.Validators, dagi DagIndex, me idx.ValidatorID) *FCIndexer {
+func NewFCIndexer(validators *pos.Validators, dagi DagIndex, getEvent func(hash.Event) dag.Event, me idx.ValidatorID, malicious bool) *FCIndexer {
 	fc := &FCIndexer{
 		dagi:          dagi,
 		validators:    validators,
 		me:            me,
 		FrameRoots:    make(map[idx.Frame]dag.Events),
 		highestEvents: make(map[idx.ValidatorID]highestEvent),
+		getEvent:      getEvent,
 	}
-	fc.searchStrategy = NewMetricStrategy(fc.GetMetricOf)
+	if malicious {
+		fc.searchStrategy = NewMetricStrategy(fc.MaliciousGetMetricOf)
+	} else {
+		fc.searchStrategy = NewMetricStrategy(fc.GetMetricOf)
+	}
 	return fc
 }
 
@@ -131,11 +139,100 @@ func (fc *FCIndexer) rootKnowledge(frame idx.Frame, event hash.Event, chosenHead
 
 // Check if root knowledge will increase when using heads as parents for a new event
 func (fc *FCIndexer) RootKnowledgeIncrease(heads hash.Events) bool {
+	if _, ok := fc.highestEvents[fc.me]; ok {
+		prevK := fc.highestEvents[fc.me].rootKnowledge
+		newK := fc.rootKnowledge(fc.highestEvents[fc.me].frame, fc.highestEvents[fc.me].id, heads)
 
-	prevK := fc.highestEvents[fc.me].rootKnowledge
-	newK := fc.rootKnowledge(fc.highestEvents[fc.me].frame, fc.highestEvents[fc.me].id, heads)
+		return newK > prevK
+	}
+	return false
+}
 
-	return newK > prevK
+func (fc *FCIndexer) GetEventFromSeq(val idx.Validator, seq idx.Event) dag.Event {
+	fc.validators.GetID(val)
+	highestEvent := fc.highestEvents[fc.validators.GetID(val)]
+	dagEvent := fc.getEvent(highestEvent.id)
+	if seq > 0 {
+		for ; dagEvent.Seq() > seq; dagEvent = fc.getEvent(*dagEvent.SelfParent()) {
+		}
+		return dagEvent
+	}
+	return nil
+}
+
+// Check stake of validators whose root knowledge will increase when using heads as parents for a new event
+func (fc *FCIndexer) HighestBeforeSeqIncrease(selfParent hash.Event, heads hash.Events) *pos.WeightCounter {
+
+	selfParentHBSeq := fc.dagi.HighestBefore(hash.Events{selfParent})
+	newHBSeq := fc.dagi.HighestBefore(heads)
+	counter := fc.validators.NewCounter()
+
+	for i, newSeq := range newHBSeq {
+		selfParentSeq := selfParentHBSeq[i]
+
+		if newSeq > selfParentSeq {
+			counter.CountByIdx(idx.Validator(i))
+		}
+	}
+	counter.Count(fc.me)
+
+	return counter
+}
+
+// Check stake of validators whose root knowledge will increase when using heads as parents for a new event
+func (fc *FCIndexer) HighestBeforeRootKnowledgeIncrease(selfParent hash.Event, heads hash.Events) *pos.WeightCounter {
+
+	selfParentHBSeq := fc.dagi.HighestBefore(hash.Events{selfParent})
+	newHBSeq := fc.dagi.HighestBefore(heads)
+	counter := fc.validators.NewCounter()
+
+	for i, newSeq := range newHBSeq {
+		selfParentSeq := selfParentHBSeq[i]
+		newEvent := fc.GetEventFromSeq(idx.Validator(i), newSeq)
+		selfParentEvent := fc.GetEventFromSeq(idx.Validator(i), selfParentSeq)
+		if newEvent != nil {
+			newRootProgress := fc.rootKnowledge(newEvent.Frame(), newEvent.ID(), nil)
+			var selfParentRootProgress Metric = 0
+			if selfParentEvent != nil {
+				selfParentRootProgress = fc.rootKnowledge(newEvent.Frame(), selfParentEvent.ID(), nil)
+			}
+			if newRootProgress > selfParentRootProgress {
+				counter.CountByIdx(idx.Validator(i))
+			}
+		}
+	}
+	//now check self's new event compared to self parent
+	newRootProgress := fc.rootKnowledge(fc.highestEvents[fc.me].frame, selfParent, heads)
+	selfParentRootProgress := fc.rootKnowledge(fc.highestEvents[fc.me].frame, selfParent, nil)
+	if newRootProgress > selfParentRootProgress {
+		counter.Count(fc.me)
+	}
+	return counter
+}
+
+// Check stake of validators whose root knowledge will increase when using heads as parents for a new event
+func (fc *FCIndexer) HighestBeforeRootKnowledgeIncreaseAboveSelfParent(selfParent hash.Event, heads hash.Events) *pos.WeightCounter {
+
+	newHBSeq := fc.dagi.HighestBefore(heads)
+	counter := fc.validators.NewCounter()
+	selfParentDAG := fc.getEvent(selfParent)
+	selfParentRootKnowledge := fc.rootKnowledge(selfParentDAG.Frame(), selfParent, nil)
+
+	for i, newSeq := range newHBSeq {
+		newEvent := fc.GetEventFromSeq(idx.Validator(i), newSeq)
+
+		if newEvent != nil {
+			newRootProgress := fc.rootKnowledge(selfParentDAG.Frame(), newEvent.ID(), nil)
+
+			if newRootProgress >= selfParentRootKnowledge {
+				counter.CountByIdx(idx.Validator(i))
+			}
+		}
+	}
+
+	counter.Count(fc.me)
+
+	return counter
 }
 
 func (fc *FCIndexer) greaterEqual(aK Metric, aFrame idx.Frame, bK Metric, bFrame idx.Frame) bool {
@@ -164,8 +261,28 @@ func (fc *FCIndexer) GetMetricOf(ids hash.Events) Metric {
 	if fc.TopFrame == 0 {
 		return 0
 	}
-	return Metric(fc.rootProgress(fc.TopFrame, ids[0], ids[1:]))
-	// return Metric(fc.rootKnowledge(fc.TopFrame, ids[0], ids[1:]))
+
+	return Metric(fc.HighestBeforeRootKnowledgeIncreaseAboveSelfParent(ids[0], ids[1:]).Sum())
+	// return Metric(fc.HighestBeforeSeqIncrease(ids[0], ids[1:]).Sum())
+	// return fc.rootProgress(fc.TopFrame, ids[0], ids[1:])
+	// return fc.rootKnowledge(fc.TopFrame, ids[0], ids[1:])
+}
+
+func (fc *FCIndexer) MaliciousGetMetricOf(ids hash.Events) Metric {
+	if fc.TopFrame == 0 {
+		return 0
+	}
+	// selfParentRootProgress := fc.rootProgress(fc.TopFrame, ids[0], nil)
+	// newRootProgress := fc.rootProgress(fc.TopFrame, ids[0], ids[1:])
+	// if selfParentRootProgress == newRootProgress {
+	// 	return 0
+	// }
+	// return piecefunc.DecimalUnit - newRootProgress
+	// selfParentMetric := Metric(fc.HighestBeforeSeqIncrease(ids[0], nil).Sum())
+	// newMetric := Metric(fc.HighestBeforeSeqIncrease(ids[0], ids[1:]).Sum())
+	selfParentMetric := Metric(fc.HighestBeforeRootKnowledgeIncreaseAboveSelfParent(ids[0], nil).Sum())
+	newMetric := Metric(fc.HighestBeforeRootKnowledgeIncreaseAboveSelfParent(ids[0], ids[1:]).Sum())
+	return Metric(fc.validators.TotalWeight()) - (newMetric - selfParentMetric)
 }
 
 func (fc *FCIndexer) SearchStrategy() SearchStrategy {

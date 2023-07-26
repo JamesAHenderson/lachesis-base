@@ -209,6 +209,28 @@ func (vi *Index) ForklessCauseProgress(aID, bID hash.Event, candidateParents, ch
 	return chosenParentsFCProgress, candidateParentsFCProgress
 }
 
+func (vi *Index) HighestBefore(parents hash.Events) []idx.Event {
+	parentsHB := make([]*HighestBeforeSeq, len(parents))
+	for i, _ := range parents {
+		parentsHB[i] = vi.GetHighestBefore(parents[i])
+		if parentsHB[i] == nil {
+			vi.crit(fmt.Errorf("parent=%s not found", parents[i].String()))
+			return nil
+		}
+	}
+
+	branchIDs := vi.Engine.BranchesInfo().BranchIDCreatorIdxs
+	HB := make([]idx.Event, vi.validators.Len())
+	for branchIDint, _ := range branchIDs {
+		branchID := idx.Validator(branchIDint)
+		for i, _ := range parents {
+			HB[branchID] = maxEvent(HB[branchID], parentsHB[i].Get(branchID).Seq)
+
+		}
+	}
+	return HB
+}
+
 func maxEvent(a idx.Event, b idx.Event) idx.Event {
 	if a > b {
 		return a
