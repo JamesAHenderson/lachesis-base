@@ -117,7 +117,7 @@ func (fc *FCIndexer) ProcessEvent(e dag.Event, eSelfParent dag.Event) {
 	}
 }
 
-// rootKnowledge computes the knowledge of roots amongst validators by counting which validators known which roots.
+// rootKnowledge computes the knowledge of roots amongst validators by counting which validators know which roots.
 // Root knowledge is an nxn binary matrix K. The ijth entry of the matrix is 1 if a root of validator i is in the
 // subgraph of events created by by validator j, all within the subgraph of event, and zero otherwise.
 // The function returns a metric counting the number of non-zero entries of the root knowledge matrix K.
@@ -213,18 +213,19 @@ func (fc *FCIndexer) HighestBeforeRootKnowledgeIncrease(selfParent hash.Event, h
 // Check stake of validators whose root knowledge will increase when using heads as parents for a new event
 func (fc *FCIndexer) HighestBeforeRootKnowledgeIncreaseAboveSelfParent(selfParent hash.Event, heads hash.Events) *pos.WeightCounter {
 
-	newHBSeq := fc.dagi.HighestBefore(heads)
+	newHBSeq := fc.dagi.HighestBefore(append(heads, selfParent))
 	counter := fc.validators.NewCounter()
 	selfParentDAG := fc.getEvent(selfParent)
-	selfParentRootKnowledge := fc.rootKnowledge(selfParentDAG.Frame(), selfParent, nil)
+	selfParentFrame := selfParentDAG.Frame()
+	selfParentRootKnowledge := fc.rootKnowledge(selfParentFrame, selfParent, nil)
 
 	for i, newSeq := range newHBSeq {
 		newEvent := fc.GetEventFromSeq(idx.Validator(i), newSeq)
 
 		if newEvent != nil {
-			newRootProgress := fc.rootKnowledge(selfParentDAG.Frame(), newEvent.ID(), nil)
+			newRootProgress := fc.rootKnowledge(selfParentFrame, newEvent.ID(), nil)
 
-			if newRootProgress >= selfParentRootKnowledge {
+			if newRootProgress >= selfParentRootKnowledge || newEvent.Frame() > selfParentFrame {
 				counter.CountByIdx(idx.Validator(i))
 			}
 		}
@@ -233,6 +234,39 @@ func (fc *FCIndexer) HighestBeforeRootKnowledgeIncreaseAboveSelfParent(selfParen
 	counter.Count(fc.me)
 
 	return counter
+}
+
+func (fc *FCIndexer) HighestBeforeRootKnowledgeIncreaseK(chosenParents hash.Events, candidateParent hash.Event) Metric {
+	selfParent := fc.highestEvents[fc.me]
+	chosenHBSeq := fc.dagi.HighestBefore(append(chosenParents, selfParent.id))
+	candidateHBSeq := fc.dagi.HighestBefore(hash.Events{candidateParent})
+	selfParentDAG := fc.getEvent(selfParent.id)
+	numVal := fc.validators.Len()
+	selfParentRootKnowledge := fc.rootKnowledge(selfParentDAG.Frame(), selfParent.id, nil) + Metric(numVal*numVal)*Metric(selfParent.frame)
+
+	var kIncrease Metric = 0
+
+	for i, candidateHBSeq := range candidateHBSeq {
+		candidateHBEvent := fc.GetEventFromSeq(idx.Validator(i), candidateHBSeq)
+		chosenHBEvent := fc.GetEventFromSeq(idx.Validator(i), chosenHBSeq[i])
+
+		var candidateK Metric = 0
+		var chosenK Metric = 0
+
+		if candidateHBEvent != nil {
+			candidateK = fc.rootKnowledge(candidateHBEvent.Frame(), candidateHBEvent.ID(), nil) + Metric(numVal*numVal)*Metric(candidateHBEvent.Frame())
+
+			if chosenHBEvent != nil {
+				chosenK = fc.rootKnowledge(chosenHBEvent.Frame(), chosenHBEvent.ID(), nil) + Metric(numVal*numVal)*Metric(chosenHBEvent.Frame())
+			}
+		}
+		kDifference := candidateK - chosenK
+		if candidateK >= selfParentRootKnowledge && kDifference > 0 {
+			kIncrease += kDifference
+		}
+	}
+
+	return kIncrease
 }
 
 func (fc *FCIndexer) greaterEqual(aK Metric, aFrame idx.Frame, bK Metric, bFrame idx.Frame) bool {
@@ -262,10 +296,11 @@ func (fc *FCIndexer) GetMetricOf(ids hash.Events) Metric {
 		return 0
 	}
 
-	return Metric(fc.HighestBeforeRootKnowledgeIncreaseAboveSelfParent(ids[0], ids[1:]).Sum())
+	// return Metric(fc.HighestBeforeRootKnowledgeIncreaseAboveSelfParent(ids[0:(len(ids)-2)], ids[len(ids)-1]).Sum())
+	// return fc.HighestBeforeRootKnowledgeIncreaseK(ids[0:(len(ids)-2)], ids[len(ids)-1])
 	// return Metric(fc.HighestBeforeSeqIncrease(ids[0], ids[1:]).Sum())
 	// return fc.rootProgress(fc.TopFrame, ids[0], ids[1:])
-	// return fc.rootKnowledge(fc.TopFrame, ids[0], ids[1:])
+	return fc.rootKnowledge(fc.TopFrame, ids[0], ids[1:])
 }
 
 func (fc *FCIndexer) MaliciousGetMetricOf(ids hash.Events) Metric {

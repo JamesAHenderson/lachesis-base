@@ -40,6 +40,57 @@ type SimLachesis struct {
 	confirmationTimer ConfirmationTimer
 }
 
+type Point struct {
+	X float64
+	Y float64
+}
+type CircularBuffer struct {
+	buffer []blockGasPerformance
+	head   int
+	tail   int
+	count  int
+	size   int
+}
+type blockGasPerformance struct {
+	blockKey          BlockKey
+	gasUsed           float64
+	performance       float64
+	atroposMedianTime int
+	numEvents         int
+	duration          float64
+	medianTTF         int
+}
+
+type GasTarget struct {
+	expMovAvPerf                 float64
+	expMovAvSizePerfWeighted     float64
+	alpha                        float64
+	target                       float64
+	allTargets                   []float64
+	blockAtroposMedianTime       []int
+	blockSeriesAtroposMedianTime []int
+	blockPerformances            []float64
+	blockNumEvents               []int
+	expMovAvNumEvents            float64
+	allExpAvPerf                 []float64
+	allExpAvSizes                []float64
+	allSizes                     []float64
+	targetDeltaSum               float64
+	slopes                       []float64
+
+	blocks         CircularBuffer
+	blockSets      CircularBuffer
+	aboveTargetGas CircularBuffer
+	belowTargetGas CircularBuffer
+	changeRate     float64
+}
+
+type eventBuffer struct {
+	events         QITestEvents
+	delayTime      int
+	remainingDelay int
+}
+
 type emissionTimes struct {
 	nowTime  int
 	prevTime int
@@ -56,7 +107,9 @@ type QITestEvent struct {
 	tdag.TestEvent
 	creationTime     int
 	confirmationTime int
+	blockKey         BlockKey
 	medianTime       int
+	gasUsed          int
 }
 
 type ConfirmationTimer struct {
@@ -91,15 +144,18 @@ type ValidatorGas struct {
 	MaxShortGas                    float64
 }
 
-var mutex sync.Mutex // a mutex used for variables shared across go rountines
+var mutexEP sync.Mutex   // a mutex used for variables shared across go rountines
+var mutexProc sync.Mutex // a mutex used for variables shared across go rountines
+var mutexConf sync.Mutex // a mutex used for variables shared across go rountines
 var KOnly bool = false
 
 // Configures a simulation of Lachesis consensus
 func Benchmark_Emission(b *testing.B) {
 	numNodes := 20
-	stakeDist := stakeCumDist()             // for stakes drawn from distribution
-	stakeRNG := rand.New(rand.NewSource(0)) // for stakes drawn from distribution
-
+	stakeDist := stakeCumDist() // for stakes drawn from distribution
+	var stakeSeed int64 = 1
+	stakeRNG := rand.New(rand.NewSource(stakeSeed)) // for stakes drawn from distribution
+	fmt.Println("Stake Seed: ", stakeSeed)
 	weights := make([]pos.Weight, numNodes)
 	for i, _ := range weights {
 		// uncomment one of the below options for valiator stake distribution
@@ -107,7 +163,7 @@ func Benchmark_Emission(b *testing.B) {
 		// weights[i] = pos.Weight(1)                               //for equal stake
 	}
 	sort.Slice(weights, func(i, j int) bool { return weights[i] > weights[j] }) // sort weights in order
-	FCParentCount := 10                                                         // maximum number of parents selected by FC indexer
+	FCParentCount := 100                                                        // maximum number of parents selected by FC indexer
 	randParentCount := 0                                                        // maximum number of parents selected randomly
 	offlineNodes := false                                                       // set to true to make smallest non-quourm validators offline
 
@@ -129,80 +185,109 @@ func Benchmark_Emission(b *testing.B) {
 	// Uncomment the desired latency type
 	var simLatency latencyI
 	var seed int64
-	seed = 0 //use this for the same seed each time the simulator runs
-	// seed = time.Now().UnixNano() //use this for a different seed each time the simulator runs
+	seed = 4
+	// for seed = 0; seed < 100; seed++ { //use this for the same seed each time the simulator runs
+	for eventSizeInBits := 200000; eventSizeInBits < 100000000; eventSizeInBits += 100000 {
+		fmt.Println("Seed: ", seed)
+		// seed = time.Now().UnixNano() //use this for a different seed each time the simulator runs
 
-	// Latencies between validators are drawn from a Normal Gaussian distribution
-	// var internetLatency gaussianLatency
-	// internetLatency.mean = 50 // mean latency in milliseconds
-	// internetLatency.std = 0   // standard deviation of latency in milliseconds
-	// maxLatency := int(internetLatency.mean + 4*internetLatency.std)
-	// fmt.Println("Gaussian Latency: seed: ", seed, " mean: ", internetLatency.mean, " std: ", internetLatency.std, " max latency: ", maxLatency)
+		// Latencies between validators are drawn from a Normal Gaussian distribution
+		// var internetLatency gaussianLatency
+		// // for internetLatency.mean = 3750; internetLatency.mean <= 30000; internetLatency.mean = internetLatency.mean + 100 { // mean latency in milliseconds
+		// internetLatency.mean = 100
+		// internetLatency.std = 30 // standard deviation of latency in milliseconds
+		// maxLatency := int(internetLatency.mean + 4*internetLatency.std)
+		// fmt.Println("Gaussian Latency: seed: ", seed, " mean: ", internetLatency.mean, " std: ", internetLatency.std, " max latency: ", maxLatency)
 
-	// Latencies between validators are modelled using a dataset of real world internet latencies between cities
-	// var internetLatency cityLatency
-	// fmt.Println("City Latency: seed: ", seed)
-	// maxLatency := internetLatency.initialise(numNodes, seed)
+		// Latencies between validators are modelled using a dataset of real world internet latencies between cities
+		var internetLatency cityLatency
+		fmt.Println("City Latency: seed: ", seed)
+		maxLatency := internetLatency.initialise(numNodes, seed)
 
-	// Latencies between validators are drawn from a dataset of latencies observed by one Fantom main net validator. Note all pairs of validators will use the same distribution
-	var internetLatency mainNetLatency
-	maxLatency := internetLatency.initialise()
+		// Latencies between validators are drawn from a dataset of latencies observed by one Fantom main net validator. Note all pairs of validators will use the same distribution
+		// var internetLatency mainNetLatency
+		// maxLatency := internetLatency.initialise()
 
-	// Overlay a P2P network between validators on top of internet
-	var P2P P2P
-	P2P.useP2P = false
-	if P2P.useP2P {
-		P2P.numValidators = numNodes
-		P2P.randSrc = rand.New(rand.NewSource(seed)) // seed RNG for selecting peers
-		P2P.maxPeers = 10
-		P2P.internetLatencies = &internetLatency
-		P2P.randomSymmetricPeers(false)
-		P2P.calculateP2PLatencies()
-		maxLatency = P2P.maxLatency
-		simLatency = P2P.P2PLatencies
-	} else {
-		simLatency = internetLatency
-	}
-	//Print latencies between validators through the P2P network
-	tempRandSrc := rand.New(rand.NewSource(seed))
-	fmt.Print("meanLatencies=np.array([")
-	for i := 0; i < numNodes; i++ {
-		fmt.Print("[")
-		for j := 0; j < numNodes; j++ {
-			fmt.Print(int(simLatency.latency(i, j, tempRandSrc)), ",")
+		// Overlay a P2P network between validators on top of internet
+		var P2P P2P
+		P2P.useP2P = false
+		if P2P.useP2P {
+			P2P.numValidators = numNodes
+			P2P.randSrc = rand.New(rand.NewSource(seed)) // seed RNG for selecting peers
+			P2P.maxPeers = 10
+			P2P.internetLatencies = &internetLatency
+			P2P.randomSymmetricPeers(false)
+			P2P.calculateP2PLatencies()
+			maxLatency = P2P.maxLatency
+			simLatency = P2P.P2PLatencies
+		} else {
+			simLatency = internetLatency
 		}
-		fmt.Println("],")
-	}
-	fmt.Println("])")
-	fmt.Println("")
-	fmt.Println("Max Latency: ", maxLatency)
-	simulationDuration := 50000 // length of simulated time in milliseconds
+		//Print latencies between validators through the P2P network
+		tempRandSrc := rand.New(rand.NewSource(seed))
+		meanLatencyAll := 0
+		meanLatencySingle := make([]int, numNodes)
+		fmt.Print("meanLatencies=np.array([")
+		for i := 0; i < numNodes; i++ {
+			fmt.Print("[")
+			for j := 0; j < numNodes; j++ {
+				pairLatency := int(simLatency.latency(i, j, tempRandSrc))
+				meanLatencyAll += pairLatency
+				meanLatencySingle[i] += pairLatency
+				fmt.Print(pairLatency, ",")
+			}
+			fmt.Println("],")
+		}
+		fmt.Println("])")
+		fmt.Println("")
+		fmt.Println("Max Latency: ", maxLatency, " Mean Latency All Validators ", meanLatencyAll/(numNodes*numNodes))
+		for i, lat := range meanLatencySingle {
+			fmt.Println("Mean Latency ", i, ": ", lat/numNodes)
+		}
 
-	UseFCNotQI := true // uses FC parent selection and event timing
-	// UseFCNotQI := false //uses QI parent selection and event timing
-	// Now run the simulation
-	KOnly = true
-	simulate(weights, FCParentCount, randParentCount, offlineNodes, &simLatency, maxLatency, simulationDuration, UseFCNotQI, NetworkGas)
-	KOnly = false
-	simulate(weights, FCParentCount, randParentCount, offlineNodes, &simLatency, maxLatency, simulationDuration, UseFCNotQI, NetworkGas)
-	UseFCNotQI = false //uses QI parent selection and event timing
-	simulate(weights, FCParentCount, randParentCount, offlineNodes, &simLatency, maxLatency, simulationDuration, UseFCNotQI, NetworkGas)
+		simulationDuration := 150000000 // length of simulated time in milliseconds
+
+		UseFCNotQI := true // uses FC parent selection and event timing
+		// UseFCNotQI := false //uses QI parent selection and event timing
+		// Now run the simulation
+
+		KOnly = true
+		// for validStake := 0.3; validStake <= 1.0; validStake = validStake + 0.05 {
+		// 	fmt.Println("Valid Stake %: ", validStake*100.0)
+		// 	simulate(weights, FCParentCount, randParentCount, offlineNodes, &simLatency, maxLatency, simulationDuration, UseFCNotQI, NetworkGas, validStake)
+		// }
+		validStake := 2.0 / 3.0
+		fmt.Println("Valid Stake %: ", validStake*100.0)
+		fmt.Println("Valid Event Timing")
+		simulate(weights, FCParentCount, randParentCount, offlineNodes, &simLatency, maxLatency, simulationDuration, UseFCNotQI, NetworkGas, validStake, eventSizeInBits)
+		fmt.Println("")
+		fmt.Println("")
+		// KOnly = false
+		// fmt.Println("Existing Event Timing")
+		// simulate(weights, FCParentCount, randParentCount, offlineNodes, &simLatency, maxLatency, simulationDuration, UseFCNotQI, NetworkGas, validStake)
+	}
+	// UseFCNotQI = false //uses QI parent selection and event timing
+	// simulate(weights, FCParentCount, randParentCount, offlineNodes, &simLatency, maxLatency, simulationDuration, UseFCNotQI, NetworkGas)
 }
 
-func simulate(weights []pos.Weight, FCQIParentCount int, randParentCount int, offlineNodes bool, latency *latencyI, maxLatency int, simulationDuration int, UseFCNotQI bool, networkGas NetworkGas) Results {
+func simulate(weights []pos.Weight, FCQIParentCount int, randParentCount int, offlineNodes bool, latency *latencyI, maxLatency int, simulationDuration int, UseFCNotQI bool, networkGas NetworkGas, validStake float64, eventSizeInBits int) Results {
 	// This function simulates the operation of a distributed network of validators. The simulation can be used to develop and test methods for improving Lachesis consensus.
 	numValidators := len(weights)
 
-	randSrc := rand.New(rand.NewSource(0)) // use a fixed seed of 0 for comparison between runs
+	// randSrc := rand.New(rand.NewSource(0)) // use a fixed seed of 0 for comparison between runs
 
 	latencyRNG := make([]*rand.Rand, numValidators)
 	randParentRNG := make([]*rand.Rand, numValidators)
 	randEvRNG := make([]*rand.Rand, numValidators)
+	blockSizeRNG := make([]*rand.Rand, numValidators)
+	targetGasRNG := make([]*rand.Rand, numValidators)
 	for i := range weights {
 		// Use same seed each time the simulator is used
-		latencyRNG[i] = rand.New(rand.NewSource(0))
-		randParentRNG[i] = rand.New(rand.NewSource(0))
-		randEvRNG[i] = rand.New(rand.NewSource(0))
+		latencyRNG[i] = rand.New(rand.NewSource(int64(i)))
+		randParentRNG[i] = rand.New(rand.NewSource(int64(i)))
+		randEvRNG[i] = rand.New(rand.NewSource(int64(i)))
+		blockSizeRNG[i] = rand.New(rand.NewSource(int64(i)))
+		targetGasRNG[i] = rand.New(rand.NewSource(int64(i)))
 
 		// Uncomment to use a different seed each time the simulator is used
 		// time.Sleep(1 * time.Millisecond) //sleep a bit for seeding RNG
@@ -311,10 +396,49 @@ func simulate(weights []pos.Weight, FCQIParentCount int, randParentCount int, of
 	// initial delay to avoid synchronous events
 	initialDelay := make([]int, numValidators)
 	for i := range initialDelay {
-		initialDelay[i] = randSrc.Intn(100) // all validators should produce their leaf events within 100 ms from the start of the simulation
+		// initialDelay[i] = randSrc.Intn(maxLatency - 11) // max time delay before creating leaf event
+		initialDelay[i] = 0
 	}
 
 	bufferedEvents := make([]QITestEvents, numValidators)
+
+	// eventSizeInBits := 100000 // E.g. 8192 is 1 Kilobyte
+	bandwidth := 100000000 // in units of bits per second. E.g. 100 000 000 is 100Mbit/sec
+	bandwidthBuffers := make([]eventBuffer, numValidators)
+	for i, _ := range bandwidthBuffers {
+		bandwidthBuffers[i].delayTime = 1000 * eventSizeInBits / bandwidth // number of ms delay in receiving each event; this should be chosen based on event size and validator internet bandwidth
+		bandwidthBuffers[i].remainingDelay = bandwidthBuffers[i].delayTime
+		// buffer.delayTime = 0
+	}
+	fmt.Println("Bandwidth delay per event: ", bandwidthBuffers[0].delayTime, " ms")
+	cpuPower := 10000000 // in units of bits per second
+	cpuBuffers := make([]eventBuffer, numValidators)
+	for i, _ := range bandwidthBuffers {
+		cpuBuffers[i].delayTime = 1000 * eventSizeInBits / cpuPower // number of ms delay in receiving each event; this should be chosen based on event size and validator internet bandwidth
+		cpuBuffers[i].remainingDelay = cpuBuffers[i].delayTime
+		// buffer.delayTime = 0
+	}
+	fmt.Println("CPU delay per event: ", cpuBuffers[0].delayTime, " ms")
+
+	sizeTargets := make([]GasTarget, numValidators)
+	for i, _ := range sizeTargets {
+		sizeTargets[i].alpha = 1
+		sizeTargets[i].expMovAvPerf = 0
+		sizeTargets[i].expMovAvSizePerfWeighted = 0 // float64(eventSizeInBits)
+		sizeTargets[i].expMovAvNumEvents = 2.0 * float64(numValidators)
+		sizeTargets[i].target = float64(eventSizeInBits)
+		bufSize := 20
+		sizeTargets[i].aboveTargetGas = *NewCircularBuffer(bufSize)
+		sizeTargets[i].belowTargetGas = *NewCircularBuffer(bufSize)
+		sizeTargets[i].blocks = *NewCircularBuffer(200)
+		sizeTargets[i].blockSets = *NewCircularBuffer(100)
+		sizeTargets[i].changeRate = 0.01
+		sizeTargets[i].slopes = append(sizeTargets[i].slopes, 0.0)
+		sizeTargets[i].blockSeriesAtroposMedianTime = append(sizeTargets[i].blockSeriesAtroposMedianTime, 0)
+		// sizeTargets[i].blockAtroposMedianTime = append(sizeTargets[i].blockAtroposMedianTime, 0)
+		// sizeTargets[i].blockPerformances = append(sizeTargets[i].blockPerformances, 0.0)
+		// sizeTargets[i].blockNumEvents = append(sizeTargets[i].blockNumEvents, 0)
+	}
 
 	eventsComplete := make([]int, numValidators)
 	// setup flag to indicate leaf event
@@ -339,7 +463,7 @@ func simulate(weights []pos.Weight, FCQIParentCount int, randParentCount int, of
 			lchs[i].confirmationTimer.currentTime = simTime
 		}
 		if simTime%1000 == 0 {
-			fmt.Print(" TIME: ", simTime) // print time progress for tracking simulation progression
+			// fmt.Print(" TIME: ", simTime) // print time progress for tracking simulation progression
 		}
 
 		// Check to see if new events are received by nodes
@@ -350,17 +474,62 @@ func simulate(weights []pos.Weight, FCQIParentCount int, randParentCount int, of
 				defer wg.Done()
 				// check for events to be received by other nodes (including self)
 				for sendNode := 0; sendNode < numValidators; sendNode++ {
-					mutex.Lock()
+					mutexEP.Lock()
 					for i := 0; i < len(eventPropagation[timeIdx][sendNode][receiveNode]); i++ {
 						e := eventPropagation[timeIdx][sendNode][receiveNode][i]
-						//add new event to buffer for cheecking if events are ready to put in DAG
-						bufferedEvents[receiveNode] = append(bufferedEvents[receiveNode], e)
+						if sendNode == receiveNode || (bandwidthBuffers[receiveNode].delayTime == 0 && cpuBuffers[receiveNode].delayTime == 0) {
+							bufferedEvents[receiveNode] = append(bufferedEvents[receiveNode], e) // no bandwidth or cpu delays for creating own events
+						} else {
+							bandwidthBuffers[receiveNode].events = append(bandwidthBuffers[receiveNode].events, e)
+							if len(bandwidthBuffers[receiveNode].events) == 1 {
+								// not already waiting to receive another event
+								bandwidthBuffers[receiveNode].remainingDelay = 1000 * e.gasUsed / bandwidth
+							}
+						}
 					}
 					//clear the events at this time index
 
 					eventPropagation[timeIdx][sendNode][receiveNode] = eventPropagation[timeIdx][sendNode][receiveNode][:0]
-					mutex.Unlock()
+					mutexEP.Unlock()
 				}
+
+				// simulate a buffer that models incoming bandwidth limitations for validators
+
+				if len(bandwidthBuffers[receiveNode].events) > 0 { // check if there are any events in the buffer
+					if bandwidthBuffers[receiveNode].remainingDelay <= 0 {
+						// event has now been received by the validator and now need to be processed by cpu
+						cpuBuffers[receiveNode].events = append(cpuBuffers[receiveNode].events, bandwidthBuffers[receiveNode].events[0])
+						if len(cpuBuffers[receiveNode].events) == 1 {
+							// not already waiting to process another event
+							cpuBuffers[receiveNode].remainingDelay = 1000 * cpuBuffers[receiveNode].events[0].gasUsed / cpuPower
+						}
+						bandwidthBuffers[receiveNode].events = bandwidthBuffers[receiveNode].events[1:]
+						if len(bandwidthBuffers[receiveNode].events) > 0 {
+							// wait for next event in the buffer
+							bandwidthBuffers[receiveNode].remainingDelay = 1000 * bandwidthBuffers[receiveNode].events[0].gasUsed / bandwidth
+						}
+
+					} else {
+						bandwidthBuffers[receiveNode].remainingDelay--
+					}
+				}
+
+				// simulate a buffer that models validator cpu time limitations in processing events
+				if len(cpuBuffers[receiveNode].events) > 0 { // check if there are any events in the buffer
+					if cpuBuffers[receiveNode].remainingDelay <= 0 {
+						// event has now been processed by the validator and is added to a buffer for checking if events are ready to add to the DAG
+						bufferedEvents[receiveNode] = append(bufferedEvents[receiveNode], cpuBuffers[receiveNode].events[0])
+						cpuBuffers[receiveNode].events = cpuBuffers[receiveNode].events[1:]
+						if len(cpuBuffers[receiveNode].events) > 0 {
+							// process next event in buffer
+							cpuBuffers[receiveNode].remainingDelay = 1000 * cpuBuffers[receiveNode].events[0].gasUsed / cpuPower
+						}
+
+					} else {
+						cpuBuffers[receiveNode].remainingDelay--
+					}
+				}
+
 				// it is required that all of an event's parents have been received before adding to DAG
 				// loop through buffer to check for events that can be processed
 				process := make([]bool, len(bufferedEvents[receiveNode]))
@@ -376,10 +545,10 @@ func simulate(weights []pos.Weight, FCQIParentCount int, randParentCount int, of
 					}
 					if process[i] {
 						// buffered event has all parents in the DAG and can now be processed
-						mutex.Lock()
+						mutexProc.Lock()
 						processEvent(inputs[receiveNode], lchs[receiveNode], buffEvent, fcIndexers[receiveNode], qiIndexers[receiveNode], &headsAll[receiveNode], nodes[receiveNode], simTime, UseFCNotQI)
 						// check for different Atropos
-						var maxKey BlockKey
+						var maxKey BlockKey //replace with lch.lastBlock?
 						for key, _ := range lchs[receiveNode].blocks {
 							if key.Frame > maxKey.Frame {
 								maxKey = key
@@ -393,7 +562,72 @@ func simulate(weights []pos.Weight, FCQIParentCount int, randParentCount int, of
 								}
 							}
 						}
-						mutex.Unlock()
+						mutexProc.Unlock()
+						// if a new block has been created, record its performance and update target block size/gas
+						numBlocksRecorded := len(sizeTargets[receiveNode].blockAtroposMedianTime)
+						simBurnInBlocks := 5
+						if len(lchs[receiveNode].blocks) > numBlocksRecorded {
+
+							// blockAtroposMedianTime, numEvents, perf := lchs[receiveNode].BlockPerf(maxKey, sizeTargets[receiveNode].blockAtroposMedianTime[numBlocksRecorded])
+
+							var b blockGasPerformance
+							if numBlocksRecorded > 0 {
+								b = lchs[receiveNode].BlockPerf(maxKey, sizeTargets[receiveNode].blockAtroposMedianTime[numBlocksRecorded-1])
+								sizeTargets[receiveNode].blockSets.Add(b)
+								// if receiveNode == 0 {
+								// fmt.Print("[", b.gasUsed, ",", b.performance, ",", b.numEvents, ",", b.duration, ",", b.medianTTF, ",", sizeTargets[receiveNode].target, ",", sizeTargets[receiveNode].slopes[len(sizeTargets[receiveNode].slopes)-1], "],")
+								// }
+							}
+
+							// blockSize := sizeTargets[receiveNode].target * (1 + 0.05*blockSizeRNG[receiveNode].Float64()) // make this depend on actual number of events?
+							if len(lchs[receiveNode].blocks) == simBurnInBlocks+1 { // ignore first blocks as burn in for simulation
+
+								sizeTargets[receiveNode].expMovAvNumEvents = float64(b.numEvents)
+								sizeTargets[receiveNode].expMovAvPerf = b.performance
+								sizeTargets[receiveNode].expMovAvSizePerfWeighted = float64(eventSizeInBits)
+								// sizeTargets[receiveNode].expMovAvSizePerfWeighted = perf * float64(eventSizeInBits) * float64(numEvents)
+								// sizeTargets[receiveNode].target = sizeTargets[receiveNode].expMovAvSizePerfWeighted / sizeTargets[receiveNode].expMovAvPerf
+
+							} else if len(lchs[receiveNode].blocks) > simBurnInBlocks+1 {
+								// sizeTargets[receiveNode].UpdateExpMovingAverage(b.performance, b.performance, float64(b.numEvents))
+
+								// sizeTargets[receiveNode].UpdateGasTarget(b, blockSizeRNG[receiveNode])
+
+								if sizeTargets[receiveNode].blockSets.IsFull() {
+									var blockKeys []BlockKey
+									for _, b := range sizeTargets[receiveNode].blockSets.buffer {
+										blockKeys = append(blockKeys, b.blockKey)
+									}
+									last := len(sizeTargets[receiveNode].blockSeriesAtroposMedianTime) - 1
+									bS := lchs[receiveNode].BlockSeriesPerf(blockKeys, sizeTargets[receiveNode].blockSeriesAtroposMedianTime[last])
+									sizeTargets[receiveNode].blockSeriesAtroposMedianTime = append(sizeTargets[receiveNode].blockSeriesAtroposMedianTime, bS.atroposMedianTime)
+									if receiveNode == 0 {
+										fmt.Print("[", bS.gasUsed, ",", bS.performance, ",", bS.numEvents, ",", bS.duration, ",", bS.medianTTF, ",", sizeTargets[receiveNode].target, ",", sizeTargets[receiveNode].slopes[len(sizeTargets[receiveNode].slopes)-1], "],")
+									}
+									sizeTargets[receiveNode].UpdateGasTarget(bS, blockSizeRNG[receiveNode])
+									sizeTargets[receiveNode].blockSets.Clear()
+								}
+							}
+							sizeTargets[receiveNode].blockAtroposMedianTime = append(sizeTargets[receiveNode].blockAtroposMedianTime, b.atroposMedianTime)
+							sizeTargets[receiveNode].blockPerformances = append(sizeTargets[receiveNode].blockPerformances, b.performance)
+							sizeTargets[receiveNode].blockNumEvents = append(sizeTargets[receiveNode].blockNumEvents, b.numEvents)
+							sizeTargets[receiveNode].allTargets = append(sizeTargets[receiveNode].allTargets, sizeTargets[receiveNode].target)
+							sizeTargets[receiveNode].allExpAvPerf = append(sizeTargets[receiveNode].allExpAvPerf, sizeTargets[receiveNode].expMovAvPerf)
+							sizeTargets[receiveNode].allExpAvSizes = append(sizeTargets[receiveNode].allExpAvSizes, sizeTargets[receiveNode].expMovAvSizePerfWeighted)
+							sizeTargets[receiveNode].allSizes = append(sizeTargets[receiveNode].allSizes, b.gasUsed)
+						}
+						// else if len(lchs[receiveNode].blocks) == 1 {
+						// 	//first block appears to be leaf node only!?!? +++ check
+						// 	blockAtroposMedianTime, numEvents, perf := lchs[receiveNode].BlockPerf(maxKey, 0)
+						// 	sizeTargets[receiveNode].blockAtroposMedianTime = append(sizeTargets[receiveNode].blockAtroposMedianTime, blockAtroposMedianTime)
+						// 	sizeTargets[receiveNode].blockPerformances = append(sizeTargets[receiveNode].blockPerformances, perf)
+						// 	sizeTargets[receiveNode].blockNumEvents = append(sizeTargets[receiveNode].blockNumEvents, numEvents)
+						// 	sizeTargets[receiveNode].expMovAvNumEvents = float64(numEvents)
+						// 	sizeTargets[receiveNode].expMovAvPerf = perf
+						// 	sizeTargets[receiveNode].expMovAvSizePerfWeighted = perf * float64(eventSizeInBits) * float64(numEvents)
+
+						// }
+
 					}
 				}
 				//remove processed events from buffer
@@ -412,6 +646,10 @@ func simulate(weights []pos.Weight, FCQIParentCount int, randParentCount int, of
 
 		// Build events and check timing condition
 		for self := 0; self < numValidators; self++ {
+			if initialDelay[self] > 0 {
+				// don't create an event during an initial delay in creating the first event at the start of the simulation
+				initialDelay[self]--
+			}
 			passedTime := simTime - prevCheckTime[self] // time since creating previous event
 			if passedTime >= minCheckInterval {
 				prevCheckTime[self] = simTime
@@ -420,10 +658,9 @@ func simulate(weights []pos.Weight, FCQIParentCount int, randParentCount int, of
 				go func(self int) { //parallel
 					defer wg.Done()
 
-					if initialDelay[self] > 0 {
+					if initialDelay[self] <= 0 {
 						// don't create an event during an initial delay in creating the first event at the start of the simulation
-						initialDelay[self]--
-					} else {
+
 						//create the event datastructure
 						selfID := nodes[self]
 						e := &QITestEvent{}
@@ -466,7 +703,10 @@ func simulate(weights []pos.Weight, FCQIParentCount int, randParentCount int, of
 								var best int
 								if UseFCNotQI {
 									best = fcIndexers[self].SearchStrategy().Choose(parents.IDs(), heads.IDs())
-
+									if fcIndexers[self].GetMetricOf(append(parents.IDs(), heads[best].ID())) <= 0 {
+										// best head doesn't improve metric, so dont include it as a parent and stop including further parents
+										break
+									}
 								} else {
 									best = qiIndexers[self].SearchStrategy().Choose(parents.IDs(), heads.IDs())
 								}
@@ -514,6 +754,10 @@ func simulate(weights []pos.Weight, FCQIParentCount int, randParentCount int, of
 						var times emissionTimes
 						times.nowTime = simTime
 						times.prevTime = selfParent[self].creationTime
+						// e.gasUsed = int(sizeTargets[self].target * (1 + 2*(blockSizeRNG[self].Float64()-0.5)))
+						e.gasUsed = int(sizeTargets[self].target * 2 * blockSizeRNG[self].Float64())
+
+						// e.gasUsed = int(sizeTargets[self].target * (math.Sin(float64(simTime)*2*math.Pi/1000000) + 1.0))
 
 						createRandEvent := randEvRNG[self].Float64() < randEvRate // used for introducing randomly created events
 						if online[selfID] == true {
@@ -530,6 +774,7 @@ func simulate(weights []pos.Weight, FCQIParentCount int, randParentCount int, of
 									// configfure below to simulate gas usage
 									SetEventMedianTime(e, lchs[self], validators)
 									gasUsed = networkGas.EventCreationGas + float64(len(e.Parents()))*networkGas.ParentGas
+									// e.gasUsed = gasUsed
 									// Add in any further gas usage here for txs etc
 									// gasUsed+=???
 									gasOK = sufficientGas(e, lchs[self], validators, &ValidatorGas[self], gasUsed)
@@ -537,8 +782,9 @@ func simulate(weights []pos.Weight, FCQIParentCount int, randParentCount int, of
 									gasOK = true //sufficientGas(e, &lchs[self], &quorumIndexers[self], &ValidatorGas[self], gasUsed)
 								}
 								if gasOK {
-									if createRandEvent || isLeaf[self] || readyToEmit(UseFCNotQI, validators, times, pastMe, fcIndexers[self], qiIndexers[self], e, stakeRatios[e.Creator()], spammer[self]) {
+									if createRandEvent || isLeaf[self] || readyToEmit(UseFCNotQI, validators, times, pastMe, fcIndexers[self], qiIndexers[self], e, stakeRatios[e.Creator()], spammer[self], validStake) {
 										//create an event if (i)a random event is created (ii) is a leaf event, or (iii) event timing condition is met
+										// fmt.Println("Validator: ", self, " created event at: ", simTime)
 										isLeaf[self] = false // only create one leaf event
 										if networkGas.UseGas {
 											updateGas(e, lchs[self], &ValidatorGas[self], gasUsed)
@@ -559,17 +805,17 @@ func simulate(weights []pos.Weight, FCQIParentCount int, randParentCount int, of
 												}
 											}
 											receiveTime := (timeIdx + delay) % maxLatency // time index for the circular buffer
-											mutex.Lock()
+											mutexEP.Lock()
 											eventPropagation[receiveTime][self][receiveNode] = append(eventPropagation[receiveTime][self][receiveNode], e) // add the event to the buffer
-											mutex.Unlock()
+											mutexEP.Unlock()
 										}
 										eventsComplete[self]++ // increment count of events created for this node
 										selfParent[self] = *e  //update self parent to be this new event
-										mutex.Lock()
-										for i, _ := range lchs {
-											lchs[i].AddConfirmationTimerEvent(e)
-										}
-										mutex.Unlock()
+										// mutexConf.Lock()
+										// for i, _ := range lchs {
+										// 	lchs[i].AddConfirmationTimerEvent(e)
+										// }
+										// mutexConf.Unlock()
 									}
 								}
 							}
@@ -601,6 +847,15 @@ func simulate(weights []pos.Weight, FCQIParentCount int, randParentCount int, of
 	fmt.Println("Max Total Parents: ", FCQIParentCount+randParentCount, " Max FC/QI Parents:", FCQIParentCount, " Max Random Parents", randParentCount)
 
 	// print number of events created by each node
+	fmt.Println("Mean Stake: ", validators.TotalWeight()/pos.Weight(numValidators))
+	std := 0.0
+	for _, s := range validators.SortedWeights() {
+		std += float64(s) * float64(s)
+	}
+	std = std / float64(numValidators)
+	std -= float64(validators.TotalWeight()/pos.Weight(numValidators)) * float64(validators.TotalWeight()/pos.Weight(numValidators))
+	std = math.Sqrt(std)
+	fmt.Println("Stake std: ", std)
 	var totalEventsComplete int = 0
 	for i, nEv := range eventsComplete {
 		totalEventsComplete += nEv
@@ -627,8 +882,12 @@ func simulate(weights []pos.Weight, FCQIParentCount int, randParentCount int, of
 	meanTTF := 0
 	meanCtr := 0
 	maxCreationTime := 0
+	numParents := 0
+	numParentsctr := 0
 	for _, lch := range lchs {
 		for _, e := range lch.confirmationTimer.allEvents {
+			numParents += len(e.Parents())
+			numParentsctr++
 			if maxCreationTime < e.creationTime {
 				maxCreationTime = e.creationTime
 			}
@@ -651,21 +910,750 @@ func simulate(weights []pos.Weight, FCQIParentCount int, randParentCount int, of
 
 	fmt.Println("Event mean TTF: ", meanTTF, " ms, min TTF: ", minTTF, " ms, max TTF: ", maxTTF, " ms")
 	fmt.Println("Last event created at: ", maxCreationTime, ", simulation ended at: ", simulationDuration, ". If this is not near the end of the simulation, the DAG may have stalled due to lack of gas, online nodes, non-forking nodes, etc.")
+	fmt.Println("Mean number of parents per event: ", numParents/numParentsctr)
+
+	// lchs[0].printBlockPerfData()
 	var results Results
 	results.maxFrame = maxFrame
 	results.numEvents = totalEventsComplete
 	return results
 
 }
+func (t *GasTarget) UpdateGasTarget(block blockGasPerformance, rng *rand.Rand) {
+	// t.blocks.Add(block)
+	// nBlocks := 5
+	// var setBlocks blockGasPerformance
+	// if t.blocks.count >= nBlocks {
+
+	// 	for i := 0; i < nBlocks; i++ {
+	// 		b := t.blocks.Get(t.blocks.count - 1 - i)
+	// 		setBlocks.gasUsed += b.gasUsed
+	// 		setBlocks.performance += b.performance
+	// 		setBlocks.numEvents += b.numEvents
+	// 	}
+	// 	setBlocks.gasUsed /= float64(nBlocks)
+	// 	setBlocks.performance /= float64(nBlocks)
+	// 	setBlocks.blockKey = block.blockKey
+	// 	setBlocks.atroposMedianTime = block.atroposMedianTime
+	// 	t.blockSets.Add(setBlocks)
+	// 	t.blocks.Clear()
+
+	// if setBlocks.gasUsed > t.target {
+	// 	t.aboveTargetGas.Add(setBlocks)
+	// } else if setBlocks.gasUsed < t.target {
+	// 	t.belowTargetGas.Add(setBlocks)
+	// }
+	// }
+
+	if block.gasUsed > t.target {
+		t.aboveTargetGas.Add(block)
+	} else if block.gasUsed < t.target {
+		t.belowTargetGas.Add(block)
+	}
+	aFull := t.aboveTargetGas.IsFull()
+	bFull := t.belowTargetGas.IsFull()
+	if aFull && bFull {
+
+		var points []Point
+		for i := 0; i < t.aboveTargetGas.count; i++ {
+			b := t.aboveTargetGas.Get(i)
+			var point Point
+			point.X = b.gasUsed
+			point.Y = b.performance
+			points = append(points, point)
+		}
+		for i := 0; i < t.belowTargetGas.count; i++ {
+			b := t.belowTargetGas.Get(i)
+			var point Point
+			point.X = b.gasUsed
+			point.Y = b.performance
+			points = append(points, point)
+		}
+
+		slope, _ := linearRegressionLSE(points)
+		t.slopes = append(t.slopes, slope)
+		t.target += slope * 10000000 //* t.changeRate
+		// if slope > 0 {
+		// 	t.target *= 1.0 + t.changeRate
+		// 	} else if slope < 0 {
+		// 	t.target /= 1.0 + t.changeRate
+		// }
+
+		count := t.aboveTargetGas.count
+		index := 0
+		for i := 0; i < count; i++ {
+			b := t.aboveTargetGas.Get(index)
+			if b.gasUsed < t.target {
+				t.belowTargetGas.InsertFrame(b)
+				t.aboveTargetGas.Remove(index)
+			} else {
+				index++
+			}
+		}
+		count = t.belowTargetGas.count
+		index = 0
+		for i := 0; i < count; i++ {
+			b := t.belowTargetGas.Get(index)
+			if b.gasUsed > t.target {
+				t.aboveTargetGas.InsertFrame(b)
+				t.belowTargetGas.Remove(index)
+			} else {
+				index++
+			}
+		}
+
+		t.aboveTargetGas.Clear()
+		t.belowTargetGas.Clear()
+	}
+
+}
+
+// func (t *GasTarget) UpdateGasTarget(block blockGasPerformance, rng *rand.Rand) {
+// 	// t.blocks.Add(block)
+// 	// nBlocks := 5
+// 	// var setBlocks blockGasPerformance
+// 	// if t.blocks.count >= nBlocks {
+
+// 	// 	for i := 0; i < nBlocks; i++ {
+// 	// 		b := t.blocks.Get(t.blocks.count - 1 - i)
+// 	// 		setBlocks.gasUsed += b.gasUsed
+// 	// 		setBlocks.performance += b.performance
+// 	// 		setBlocks.numEvents += b.numEvents
+// 	// 	}
+// 	// 	setBlocks.gasUsed /= float64(nBlocks)
+// 	// 	setBlocks.performance /= float64(nBlocks)
+// 	// 	setBlocks.blockKey = block.blockKey
+// 	// 	setBlocks.atroposMedianTime = block.atroposMedianTime
+// 	// 	t.blockSets.Add(setBlocks)
+// 	// 	t.blocks.Clear()
+
+// 	// if setBlocks.gasUsed > t.target {
+// 	// 	t.aboveTargetGas.Add(setBlocks)
+// 	// } else if setBlocks.gasUsed < t.target {
+// 	// 	t.belowTargetGas.Add(setBlocks)
+// 	// }
+// 	// }
+
+// 	if block.gasUsed > t.target {
+// 		t.aboveTargetGas.Add(block)
+// 	} else if block.gasUsed < t.target {
+// 		t.belowTargetGas.Add(block)
+// 	}
+// 	aFull := t.aboveTargetGas.IsFull()
+// 	bFull := t.belowTargetGas.IsFull()
+// 	if aFull && bFull {
+// 		aboveMeanPerf := 0.0
+// 		aboveMeanGas := 0.0
+// 		for i := 0; i < t.aboveTargetGas.count; i++ {
+// 			b := t.aboveTargetGas.Get(i)
+// 			aboveMeanGas += b.gasUsed
+// 			aboveMeanPerf += b.performance
+// 		}
+// 		aboveMeanGas /= float64(t.aboveTargetGas.count)
+
+// 		belowMeanPerf := 0.0
+// 		belowMeanGas := 0.0
+// 		for i := 0; i < t.belowTargetGas.count; i++ {
+// 			b := t.belowTargetGas.Get(i)
+// 			belowMeanGas += b.gasUsed
+// 			belowMeanPerf += b.performance
+// 		}
+// 		belowMeanGas /= float64(t.belowTargetGas.count)
+
+// 		// distAboveBelow := aboveMeanGas - belowMeanGas
+
+// 		if aboveMeanPerf > belowMeanPerf {
+// 			// distTargetAbove := aboveMeanGas - t.target
+// 			// distRatio := distTargetAbove / distAboveBelow
+// 			// t.target += 0.1 * distTargetAbove
+// 			// t.target *= (1 + t.changeRate*distRatio)
+// 			t.target *= 1.0 + t.changeRate
+// 			// t.aboveTargetGas.Clear() //either clear all, or remove blocks no longer below target
+// 			count := t.aboveTargetGas.count
+// 			index := 0
+// 			for i := 0; i < count; i++ {
+// 				b := t.aboveTargetGas.Get(index)
+// 				if b.gasUsed < t.target {
+// 					t.belowTargetGas.InsertFrame(b)
+// 					t.aboveTargetGas.Remove(index)
+// 				} else {
+// 					index++
+// 				}
+// 			}
+// 		} else if aboveMeanPerf < belowMeanPerf {
+// 			// distTargetBelow := t.target - belowMeanGas
+// 			// distRatio := distTargetBelow / distAboveBelow
+// 			// t.target -= 0.1 * distTargetBelow
+// 			// t.target /= (1 + t.changeRate*distRatio)
+// 			t.target /= 1.0 + t.changeRate
+// 			// t.belowTargetGas.Clear() //either clear all, or remove blocks no longer below target
+// 			count := t.belowTargetGas.count
+// 			index := 0
+// 			for i := 0; i < count; i++ {
+// 				b := t.belowTargetGas.Get(index)
+// 				if b.gasUsed > t.target {
+// 					t.aboveTargetGas.InsertFrame(b)
+// 					t.belowTargetGas.Remove(index)
+// 				} else {
+// 					index++
+// 				}
+// 			}
+// 		}
+// 		t.aboveTargetGas.Clear()
+// 		t.belowTargetGas.Clear()
+// 	}
+
+// }
+
+// works, but after a long time very infrequent target changes
+// func (t *GasTarget) UpdateGasTarget(block blockGasPerformance, rng *rand.Rand) {
+// 	// blockAtroposMedianTime, numEvents, blockSize, perf = lchs[receiveNode].BlockPerf(maxKey, sizeTargets[receiveNode].blockAtroposMedianTime[numBlocksRecorded-1])
+// 	t.blocks.Add(block)
+// 	nBlocks := 5
+// 	if t.blocks.count >= nBlocks {
+// 		var setBlocks blockGasPerformance
+// 		for i := 0; i < nBlocks; i++ {
+// 			b := t.blocks.Get(t.blocks.count - 1 - i)
+// 			setBlocks.gasUsed += b.gasUsed
+// 			setBlocks.performance += b.performance
+// 			setBlocks.numEvents += b.numEvents
+// 		}
+// 		setBlocks.gasUsed /= float64(nBlocks)
+// 		setBlocks.performance /= float64(nBlocks)
+// 		setBlocks.blockKey = block.blockKey
+// 		setBlocks.atroposMedianTime = block.atroposMedianTime
+// 		t.blockSets.Add(setBlocks)
+// 	}
+// 	sampleAbove := rng.Perm(t.blockSets.count)
+// 	sampleBelow := rng.Perm(t.blockSets.count)
+
+// 	t.aboveTargetGas.Clear()
+// 	t.belowTargetGas.Clear()
+
+// 	for _, sample := range sampleAbove {
+// 		block := t.blockSets.Get(sample)
+// 		if block.gasUsed > t.target {
+// 			t.aboveTargetGas.Add(block)
+// 		}
+// 	}
+
+// 	for _, sample := range sampleBelow {
+// 		block := t.blockSets.Get(sample)
+// 		if block.gasUsed < t.target {
+// 			t.belowTargetGas.Add(block)
+// 		}
+// 	}
+
+// 	aFull := t.aboveTargetGas.IsFull()
+// 	bFull := t.belowTargetGas.IsFull()
+// 	if aFull && bFull {
+// 		aboveMeanPerf := 0.0
+// 		aboveMeanGas := 0.0
+// 		for i := 0; i < t.aboveTargetGas.count; i++ {
+// 			b := t.aboveTargetGas.Get(i)
+// 			aboveMeanGas += b.gasUsed
+// 			aboveMeanPerf += b.performance
+// 		}
+// 		aboveMeanGas /= float64(t.aboveTargetGas.count)
+
+// 		belowMeanPerf := 0.0
+// 		belowMeanGas := 0.0
+// 		for i := 0; i < t.belowTargetGas.count; i++ {
+// 			b := t.belowTargetGas.Get(i)
+// 			belowMeanGas += b.gasUsed
+// 			belowMeanPerf += b.performance
+// 		}
+// 		belowMeanGas /= float64(t.belowTargetGas.count)
+
+// 		// distAboveBelow := aboveMeanGas - belowMeanGas
+
+// 		if aboveMeanPerf > belowMeanPerf {
+// 			// distTargetAbove := aboveMeanGas - t.target
+// 			// distRatio := distTargetAbove / distAboveBelow
+// 			// t.target += 0.1 * distTargetAbove
+// 			// t.target *= (1 + t.changeRate*distRatio)
+// 			t.target *= 1.0 + t.changeRate
+// 			// t.aboveTargetGas.Clear() //either clear all, or remove blocks no longer below target
+// 			count := t.aboveTargetGas.count
+// 			index := 0
+// 			for i := 0; i < count; i++ {
+// 				b := t.aboveTargetGas.Get(index)
+// 				if b.gasUsed < t.target {
+// 					t.belowTargetGas.Insert(b, t.target)
+// 					t.aboveTargetGas.Remove(index)
+// 				} else {
+// 					index++
+// 				}
+// 			}
+// 		} else if aboveMeanPerf < belowMeanPerf {
+// 			// distTargetBelow := t.target - belowMeanGas
+// 			// distRatio := distTargetBelow / distAboveBelow
+// 			// t.target -= 0.1 * distTargetBelow
+// 			// t.target /= (1 + t.changeRate*distRatio)
+// 			t.target /= 1.0 + t.changeRate
+// 			// t.belowTargetGas.Clear() //either clear all, or remove blocks no longer below target
+// 			count := t.belowTargetGas.count
+// 			index := 0
+// 			for i := 0; i < count; i++ {
+// 				b := t.belowTargetGas.Get(index)
+// 				if b.gasUsed > t.target {
+// 					t.aboveTargetGas.Insert(b, t.target)
+// 					t.belowTargetGas.Remove(index)
+// 				} else {
+// 					index++
+// 				}
+// 			}
+// 		}
+// 	}
+
+// }
+
+// this function works pretty well, some random walk variation
+func (t *GasTarget) UpdateExpMovingAverage(perf float64, size float64, numEvents float64) {
+	lag := 20 // if Gaussian noise, then want >12ish
+	end := len(t.allExpAvPerf) - 1
+	if end > 3*lag { //&& end%lag == 0 { // 2* lag needed plus some burn in time
+		size1 := 0.0
+		size2 := 0.0
+		perf1 := 0.0
+		perf2 := 0.0
+		for i := 0; i < lag; i++ {
+			size1 += t.allSizes[end-i]
+			size2 += t.allSizes[end-i-lag]
+			perf1 += t.blockPerformances[end-i]
+			perf2 += t.blockPerformances[end-i-lag]
+		}
+		// slope := (t.expMovAvPerf - t.allExpAvPerf[len(t.allExpAvPerf)-lag]) / (t.expMovAvSizePerfWeighted - t.allExpAvSizes[len(t.allExpAvPerf)-lag])
+		// delPerf := 0.01 * (t.expMovAvPerf + t.allExpAvPerf[len(t.allExpAvPerf)-lag])
+		slope := (perf1 - perf2) / (size1 - size2)
+		// delPerf := 0.01 * (perf1 + perf2) / float64(lag)
+		// delTarget := -delPerf / slope
+		del := 1.001
+		if slope > 0 { // implement a biased random walk
+			t.target *= del
+		} else if slope < 0 {
+			t.target *= 1.0 / del
+		}
+		// t.target += delTarget
+	}
+	// t.target += 0.00000001 * (t.expMovAvPerf - t.allExpAvPerf[len(t.allExpAvPerf)-lag]) * (t.expMovAvSizePerfWeighted - t.allExpAvSizes[len(t.allExpAvPerf)-lag]) * t.target
+	// t.target += 0.00000001 * (perf - t.expMovAvPerf) * (size - t.expMovAvSizePerfWeighted) * t.target //remove target?
+
+	a := 0.01
+	t.expMovAvPerf = a*perf + (1-a)*t.expMovAvPerf
+	t.expMovAvSizePerfWeighted = a*size + (1-a)*t.expMovAvSizePerfWeighted
+	t.expMovAvNumEvents = a*numEvents + (1-a)*t.expMovAvNumEvents
+	// t.expMovAvPerf = t.alpha*perf + (1-t.alpha)*t.expMovAvPerf
+	// t.expMovAvSizePerfWeighted = t.alpha*size*perf + (1-t.alpha)*t.expMovAvSizePerfWeighted
+	// t.expMovAvNumEvents = t.alpha*numEvents + (1-t.alpha)*t.expMovAvNumEvents
+	// t.target = t.expMovAvSizePerfWeighted / t.expMovAvPerf
+
+	// prevPerf := t.blockPerformances[len(t.blockPerformances)-1]
+	// prevSize := t.allSizes[len(t.allSizes)-1]
+
+}
+
+func (lch *SimLachesis) BlockPerf(key BlockKey, priorAtroposMedianTime int) blockGasPerformance {
+	var blockEvents QITestEvents
+	var atropos QITestEvent
+	blockGasUsed := 0
+	for _, event := range lch.confirmationTimer.allEvents {
+		event := event
+		if event.blockKey == key {
+			blockEvents = append(blockEvents, &event)
+			// TTF := event.confirmationTime - event.creationTime
+			// TTF := event.confirmationTime - event.creationTime
+			// blockTTFs = append(blockTTFs, TTF)
+			blockGasUsed += event.gasUsed
+			if event.ID() == lch.blocks[key].Atropos {
+				atropos = event
+			}
+		}
+	}
+
+	// // calculate the block's median time to finality (TTF) across events
+	// sort.Ints(blockTTFs)
+	// var medianTTF int
+	// l := len(blockTTFs)
+	// if l == 0 {
+	// 	medianTTF = 0 // this should never occur!
+	// } else if l%2 == 0 {
+	// 	medianTTF = (blockTTFs[l/2-1] + blockTTFs[l/2]) / 2
+	// } else {
+	// 	medianTTF = blockTTFs[l/2]
+	// }
+
+	// first step is to find highest events
+	validators := lch.store.GetValidators()
+	highestEvents := make([]*QITestEvent, validators.Len())
+	for _, event := range blockEvents {
+		event := event
+		// +++ todo, deal with forks!
+		valIdx := validators.GetIdx(event.Creator())
+		if highestEvents[valIdx] == nil {
+			highestEvents[valIdx] = event
+		} else {
+			if event.Seq() > highestEvents[valIdx].Seq() {
+				highestEvents[valIdx] = event
+			}
+		}
+	}
+
+	//remove validators with no event
+	temp := highestEvents[:0]
+	for _, event := range highestEvents {
+		if event != nil {
+			temp = append(temp, event)
+		}
+	}
+	highestEvents = temp
+	// the highest before event for each validator has been obtained, now sort highest before events according to creation time
+	sort.Slice(highestEvents, func(i, j int) bool {
+		a, b := highestEvents[i], highestEvents[j]
+		return a.creationTime < b.creationTime
+	})
+	// Calculate weighted median from the sorted events as done in go-opera/vcmt/median_time.go MedianTime()
+
+	// var currWeight pos.Weight
+	var atroposMedianTime int
+	{
+		medianWeight := validators.TotalWeight() / 2
+		var currWeight pos.Weight
+		for _, event := range highestEvents {
+			currWeight += validators.Get(event.Creator())
+			if currWeight >= medianWeight {
+				atroposMedianTime = event.creationTime
+				break
+			}
+		}
+	}
+
+	var blockTTFs []int
+	for _, event := range blockEvents {
+
+		TTF := atroposMedianTime - event.creationTime
+		// TTF := event.confirmationTime - event.creationTime
+		blockTTFs = append(blockTTFs, TTF)
+
+	}
+	// calculate the block's median time to finality (TTF) across events
+	sort.Ints(blockTTFs)
+	var medianTTF int
+	l := len(blockTTFs)
+	if l == 0 {
+		medianTTF = 0 // this should never occur!
+	} else if l%2 == 0 {
+		medianTTF = (blockTTFs[l/2-1] + blockTTFs[l/2]) / 2
+	} else {
+		medianTTF = blockTTFs[l/2]
+	}
+
+	// calculate the block gas used per second
+	atroposMedianTime = atropos.creationTime
+	blockDuration := atroposMedianTime - priorAtroposMedianTime // +++checks here, ensure >0 etc?
+
+	// medianTTF = blockDuration
+	// blockDuration = medianTTF //cant use because depends on later frames for finality
+	numEvents := float64(len(blockEvents))
+	timeInterval := float64(blockDuration) // float64(numEvents)
+	meanEventGas := float64(blockGasUsed) / float64(numEvents)
+	// priorAtroposMedianTime = atroposMedianTime
+	// gasPerMilliSec := float64(blockGasUsed) / float64(blockDuration) / float64(len(blockEvents))
+	return blockGasPerformance{
+		blockKey:    key,
+		gasUsed:     meanEventGas,
+		performance: meanEventGas * float64(len(blockEvents)) / timeInterval / timeInterval,
+		// performance:       meanEventGas * float64(len(blockEvents)) / timeInterval / float64(medianTTF),
+		atroposMedianTime: atroposMedianTime,
+		numEvents:         len(blockEvents),
+		duration:          timeInterval,
+		medianTTF:         medianTTF,
+	}
+}
+func (lch *SimLachesis) BlockSeriesPerf(keys []BlockKey, priorAtroposMedianTime int) blockGasPerformance {
+	var blockEvents QITestEvents
+	var atropos QITestEvent
+	blockGasUsed := 0
+	for _, event := range lch.confirmationTimer.allEvents {
+		event := event
+		for _, key := range keys {
+			if event.blockKey == key {
+				blockEvents = append(blockEvents, &event)
+				// TTF := event.confirmationTime - event.creationTime
+				// TTF := event.confirmationTime - event.creationTime
+				// blockTTFs = append(blockTTFs, TTF)
+				blockGasUsed += event.gasUsed
+				if event.ID() == lch.blocks[keys[len(keys)-1]].Atropos {
+					atropos = event
+				}
+				break
+			}
+		}
+	}
+
+	// // calculate the block's median time to finality (TTF) across events
+	// sort.Ints(blockTTFs)
+	// var medianTTF int
+	// l := len(blockTTFs)
+	// if l == 0 {
+	// 	medianTTF = 0 // this should never occur!
+	// } else if l%2 == 0 {
+	// 	medianTTF = (blockTTFs[l/2-1] + blockTTFs[l/2]) / 2
+	// } else {
+	// 	medianTTF = blockTTFs[l/2]
+	// }
+
+	// first step is to find highest events
+	validators := lch.store.GetValidators()
+	highestEvents := make([]*QITestEvent, validators.Len())
+	for _, event := range blockEvents {
+		event := event
+		// +++ todo, deal with forks!
+		valIdx := validators.GetIdx(event.Creator())
+		if highestEvents[valIdx] == nil {
+			highestEvents[valIdx] = event
+		} else {
+			if event.Seq() > highestEvents[valIdx].Seq() {
+				highestEvents[valIdx] = event
+			}
+		}
+	}
+
+	//remove validators with no event
+	temp := highestEvents[:0]
+	for _, event := range highestEvents {
+		if event != nil {
+			temp = append(temp, event)
+		}
+	}
+	highestEvents = temp
+	// the highest before event for each validator has been obtained, now sort highest before events according to creation time
+	sort.Slice(highestEvents, func(i, j int) bool {
+		a, b := highestEvents[i], highestEvents[j]
+		return a.creationTime < b.creationTime
+	})
+	// Calculate weighted median from the sorted events as done in go-opera/vcmt/median_time.go MedianTime()
+
+	// var currWeight pos.Weight
+	var atroposMedianTime int
+	{
+		medianWeight := validators.TotalWeight() / 2
+		var currWeight pos.Weight
+		for _, event := range highestEvents {
+			currWeight += validators.Get(event.Creator())
+			if currWeight >= medianWeight {
+				atroposMedianTime = event.creationTime
+				break
+			}
+		}
+	}
+
+	var blockTTFs []int
+	for _, event := range blockEvents {
+
+		TTF := atroposMedianTime - event.creationTime
+		// TTF := event.confirmationTime - event.creationTime
+		blockTTFs = append(blockTTFs, TTF)
+
+	}
+	// calculate the block's median time to finality (TTF) across events
+	sort.Ints(blockTTFs)
+	var medianTTF int
+	l := len(blockTTFs)
+	if l == 0 {
+		medianTTF = 0 // this should never occur!
+	} else if l%2 == 0 {
+		medianTTF = (blockTTFs[l/2-1] + blockTTFs[l/2]) / 2
+	} else {
+		medianTTF = blockTTFs[l/2]
+	}
+
+	// calculate the block gas used per second
+	atroposMedianTime = atropos.creationTime
+	blockMeanDuration := (atroposMedianTime - priorAtroposMedianTime) / len(keys) // +++checks here, ensure >0 etc?
+
+	// medianTTF = blockDuration
+	// blockDuration = medianTTF //cant use because depends on later frames for finality
+	numEvents := float64(len(blockEvents))
+	timeInterval := float64(blockMeanDuration) // float64(numEvents)
+	meanEventGas := float64(blockGasUsed) / float64(numEvents)
+	// priorAtroposMedianTime = atroposMedianTime
+	// gasPerMilliSec := float64(blockGasUsed) / float64(blockDuration) / float64(len(blockEvents))
+	return blockGasPerformance{
+		blockKey:    keys[0],
+		gasUsed:     meanEventGas,
+		performance: meanEventGas * float64(len(blockEvents)) / timeInterval / timeInterval,
+		// performance:       meanEventGas * float64(len(blockEvents)) / timeInterval / float64(medianTTF),
+		atroposMedianTime: atroposMedianTime,
+		numEvents:         len(blockEvents),
+		duration:          timeInterval,
+		medianTTF:         medianTTF,
+	}
+}
+
+// func (lch *SimLachesis) printBlockPerfData() {
+// 	// first sort blocks in order of creation time/frame
+// 	if len(lch.blocks) > 1 {
+// 		var sortedBlockKeys []BlockKey
+// 		for key, _ := range lch.blocks {
+// 			sortedBlockKeys = append(sortedBlockKeys, key)
+// 		}
+// 		sort.Slice(sortedBlockKeys, func(i, j int) bool {
+// 			a, b := sortedBlockKeys[i], sortedBlockKeys[j]
+// 			return a.Frame < b.Frame
+// 		})
+// 		priorAtroposMedianTime := 0
+
+// 		for _, key := range sortedBlockKeys[1:] { //skip first block as it is a bit different and has no prior block time
+
+// 			// fmt.Println("Block Frame: ", key.Frame, " Block Duration: ", blockDuration, " Block gas per ms: ", gasPerMilliSec, " Block median TTF: ", medianTTF, " gas per ms / TTF: ", gasPerMilliSec/float64(medianTTF), " Num Events: ", len(blockEvents))
+// 			var perf float64
+// 			priorAtroposMedianTime, _, _, perf = lch.BlockPerf(key, priorAtroposMedianTime)
+// 			fmt.Print(perf, ",")
+// 		}
+// 	}
+// }
+
+// func (lch *SimLachesis) BlockTPSAndTPS() {
+// 	for key, _ := range lch.blocks {
+// 		var blockEvents QITestEvents
+// 		var blockTTFs []int
+// 		blockGasUsed := 0
+// 		for _, event := range lch.confirmationTimer.allEvents {
+// 			event := event
+// 			if event.blockKey == key {
+// 				blockEvents = append(blockEvents, &event)
+// 				TTF := event.confirmationTime - event.creationTime
+// 				blockTTFs = append(blockTTFs, TTF)
+// 				blockGasUsed += event.gasUsed
+// 			}
+// 		}
+// 		// now have all the events included in the current block
+
+// 		// calculate the block's median time to finality (TTF) across events
+// 		sort.Ints(blockTTFs)
+// 		var medianTTF int
+// 		l := len(blockTTFs)
+// 		if l == 0 {
+// 			medianTTF = 0 // this should never occur!
+// 		} else if l%2 == 0 {
+// 			medianTTF = (blockTTFs[l/2-1] + blockTTFs[l/2]) / 2
+// 		} else {
+// 			medianTTF = blockTTFs[l/2]
+// 		}
+
+// 		// calculate the block gas used per second
+// 		validators := lch.store.GetValidators()
+// 		//start of block is median creation time of the lowest event for each validator
+// 		// first step is to find lowest events
+// 		lowestEvents := make([]*QITestEvent, validators.Len())
+// 		for _, event := range blockEvents {
+// 			event := event
+// 			// +++ todo, deal with forks!
+// 			valIdx := validators.GetIdx(event.Creator())
+// 			if lowestEvents[valIdx] == nil {
+// 				lowestEvents[valIdx] = event
+// 			} else {
+// 				if event.Seq() < lowestEvents[valIdx].Seq() {
+// 					lowestEvents[valIdx] = event
+// 				}
+// 			}
+// 		}
+
+// 		//remove validators with no event
+// 		temp := lowestEvents[:0]
+// 		for _, event := range lowestEvents {
+// 			if event != nil {
+// 				temp = append(temp, event)
+// 			}
+// 		}
+// 		lowestEvents = temp
+// 		// the lowest event for each validator has been obtained, now sort according to creation time
+// 		sort.Slice(lowestEvents, func(i, j int) bool {
+// 			a, b := lowestEvents[i], lowestEvents[j]
+// 			return a.creationTime < b.creationTime
+// 		})
+// 		// Calculate weighted median from the sorted events as done in go-opera/vcmt/median_time.go MedianTime()
+
+// 		medianWeight := validators.TotalWeight() / 2
+// 		var medianStartTime int
+// 		{
+// 			var currWeight pos.Weight
+// 			for _, event := range lowestEvents {
+// 				currWeight += validators.Get(event.Creator())
+// 				if currWeight >= medianWeight {
+// 					medianStartTime = event.creationTime
+// 					break
+// 				}
+// 			}
+// 		}
+
+// 		// end of a block is the Atropos median creation time of HighestBefore events
+// 		// first step is to find highest events
+// 		highestEvents := make([]*QITestEvent, validators.Len())
+// 		for _, event := range blockEvents {
+// 			event := event
+// 			// +++ todo, deal with forks!
+// 			valIdx := validators.GetIdx(event.Creator())
+// 			if highestEvents[valIdx] == nil {
+// 				highestEvents[valIdx] = event
+// 			} else {
+// 				if event.Seq() > highestEvents[valIdx].Seq() {
+// 					highestEvents[valIdx] = event
+// 				}
+// 			}
+// 		}
+
+// 		//remove validators with no event
+// 		temp = highestEvents[:0]
+// 		for _, event := range highestEvents {
+// 			if event != nil {
+// 				temp = append(temp, event)
+// 			}
+// 		}
+// 		highestEvents = temp
+// 		// the highest before event for each validator has been obtained, now sort highest before events according to creation time
+// 		sort.Slice(highestEvents, func(i, j int) bool {
+// 			a, b := highestEvents[i], highestEvents[j]
+// 			return a.creationTime < b.creationTime
+// 		})
+// 		// Calculate weighted median from the sorted events as done in go-opera/vcmt/median_time.go MedianTime()
+
+// 		// var currWeight pos.Weight
+// 		var medianEndTime int
+// 		{
+// 			var currWeight pos.Weight
+// 			for _, event := range highestEvents {
+// 				currWeight += validators.Get(event.Creator())
+// 				if currWeight >= medianWeight {
+// 					medianEndTime = event.creationTime
+// 					break
+// 				}
+// 			}
+// 		}
+// 		//
+// 		blockDuration := medianEndTime - medianStartTime // +++checks here, ensure >0 etc?
+
+// 		gasPerMilliSec := float64(len(blockEvents)) * float64(blockGasUsed) / float64(blockDuration) // +++ this should include gas per block, for now assume
+
+// 		fmt.Println("Block Frame: ", key.Frame, "Block gas per ms: ", gasPerMilliSec, " Block median TTF: ", medianTTF, " gas per ms / TTF: ", gasPerMilliSec/float64(medianTTF))
+// 	}
+
+// }
 
 func (lch *SimLachesis) AddConfirmationTimerEvent(event *QITestEvent) {
 	lch.confirmationTimer.allEvents = append(lch.confirmationTimer.allEvents, *event)
 }
 
 func (lch *SimLachesis) ApplyEvent(event dag.Event) {
-	for i := len(lch.confirmationTimer.allEvents) - 1; i >= 0; i-- {
+	for i := len(lch.confirmationTimer.allEvents) - 1; i >= 0; i-- { // search in reverse order because confirmed events should be fairly recent
 		if lch.confirmationTimer.allEvents[i].ID() == event.ID() {
 			lch.confirmationTimer.allEvents[i].confirmationTime = lch.confirmationTimer.currentTime
+			lch.confirmationTimer.allEvents[i].blockKey = BlockKey{
+				Epoch: lch.store.GetEpoch(),
+				Frame: lch.store.GetLastDecidedFrame() + 1,
+			}
+			break
 		}
 	}
 }
@@ -705,6 +1693,7 @@ func processEvent(input EventStore, lchs *SimLachesis, e *QITestEvent, fcIndexer
 	}
 
 	updateHeads(e, heads)
+	lchs.AddConfirmationTimerEvent(e)
 	return e.Frame()
 }
 
@@ -750,10 +1739,11 @@ func isAllowedToEmit(passedTime int, stakeRatio uint64, metric ancestor.Metric) 
 }
 
 // Approximates go-opera conditions for event emission
-func readyToEmit(FCNotQI bool, validators *pos.Validators, times emissionTimes, pastMe pos.Weight, fcIndexer *ancestor.FCIndexer, qiIndexer *ancestor.QuorumIndexer, e dag.Event, stakeRatio uint64, spammer bool) (ready bool) {
+func readyToEmit(FCNotQI bool, validators *pos.Validators, times emissionTimes, pastMe pos.Weight, fcIndexer *ancestor.FCIndexer, qiIndexer *ancestor.QuorumIndexer, e dag.Event, stakeRatio uint64, spammer bool, validStake float64) (ready bool) {
 	var metric ancestor.Metric
 
 	if FCNotQI {
+		//use fc event timing
 		metric = (ancestor.Metric(pastMe) * piecefunc.DecimalUnit) / ancestor.Metric(validators.TotalWeight())
 
 		// if pastMe < thresh {
@@ -764,12 +1754,13 @@ func readyToEmit(FCNotQI bool, validators *pos.Validators, times emissionTimes, 
 			metric = 0.03 * piecefunc.DecimalUnit
 		}
 		// prefer new events increase root knowledge by reducing metric of events that don't increase root knowledge
-		if !fcIndexer.RootKnowledgeIncrease(e.Parents()) {
-			metric /= 15
-		}
+		// if !fcIndexer.RootKnowledgeIncrease(e.Parents()) {
+		// 	metric /= 15
+		// }
 		metric = overheadAdjustedEventMetricF(validators.Len(), uint64(1*piecefunc.DecimalUnit), metric) // busyRate assumed to be 1
 
 	} else {
+		//use quorum indexer event timing
 		metric = eventMetric(qiIndexer.GetMetricOf(e.Parents()), e.Seq())
 		metric = overheadAdjustedEventMetricF(validators.Len(), uint64(1*piecefunc.DecimalUnit), metric) // busyRate assumed to be 1
 	}
@@ -780,9 +1771,9 @@ func readyToEmit(FCNotQI bool, validators *pos.Validators, times emissionTimes, 
 		if spammer {
 			return fcIndexer.RootKnowledgeIncrease(e.Parents()) && fcIndexer.HighestBeforeRootKnowledgeIncrease(*e.SelfParent(), e.Parents()).HasQuorum() // spammer validator will try to spam events by emitting whenever it can increase DAG progress metric
 		}
-		// return pastMe >= validators.Quorum() && fcIndexer.RootKnowledgeIncrease(e.Parents()) && fcIndexer.HighestBeforeRootKnowledgeIncrease(*e.SelfParent(), e.Parents())
+		// return pastMe >= validators.Quorum() && fcIndexer.RootKnowledgeIncrease(e.Parents()) //&& fcIndexer.HighestBeforeRootKnowledgeIncrease(*e.SelfParent(), e.Parents())
 		// return fcIndexer.HighestBeforeSeqIncrease(*e.SelfParent(), e.Parents()).HasQuorum() && fcIndexer.RootKnowledgeIncrease(e.Parents())
-		return fcIndexer.HighestBeforeRootKnowledgeIncreaseAboveSelfParent(*e.SelfParent(), e.Parents()).HasQuorum() && fcIndexer.RootKnowledgeIncrease(e.Parents())
+		return float64(fcIndexer.HighestBeforeRootKnowledgeIncreaseAboveSelfParent(*e.SelfParent(), e.Parents()).Sum()) >= validStake*float64(validators.TotalWeight()) && fcIndexer.RootKnowledgeIncrease(e.Parents())
 	}
 
 }
@@ -1088,13 +2079,13 @@ func updateGas(event *QITestEvent, lch *SimLachesis, validatorGas *ValidatorGas,
 		// event is a non-leaf event
 		// find selfParent QITestEvent
 		var selfParentQI QITestEvent
-		mutex.Lock()
+		mutexConf.Lock()
 		for i := len(lch.confirmationTimer.allEvents) - 1; i >= 0; i-- { //search in reverse order because events should normally be recent
 			if lch.confirmationTimer.allEvents[i].ID() == *event.SelfParent() {
 				selfParentQI = lch.confirmationTimer.allEvents[i]
 			}
 		}
-		mutex.Unlock()
+		mutexConf.Unlock()
 
 		millisecondsElapsed := 0
 		if event.medianTime > selfParentQI.medianTime { // needs to be positive time difference; new event comes after self parent
@@ -1124,13 +2115,13 @@ func sufficientGas(event *QITestEvent, lch *SimLachesis, validators *pos.Validat
 	if (*event).SelfParent() != nil { // event is a non-leaf event
 		// find selfParent QITestEvent
 		var selfParentQI QITestEvent
-		mutex.Lock()
+		mutexConf.Lock()
 		for i := len(lch.confirmationTimer.allEvents) - 1; i >= 0; i-- { //search in reverse order because events should normally be recent
 			if lch.confirmationTimer.allEvents[i].ID() == *event.SelfParent() {
 				selfParentQI = lch.confirmationTimer.allEvents[i]
 			}
 		}
-		mutex.Unlock()
+		mutexConf.Unlock()
 
 		millisecondsElapsed := 0
 		if event.medianTime > selfParentQI.medianTime {
@@ -1183,7 +2174,7 @@ func SetEventMedianTime(event *QITestEvent, lch *SimLachesis, validators *pos.Va
 
 	highestEvents := make([]QITestEvent, validators.Len()) // create a slice of events (to be found)
 	// now find the QITestEvent for each of the highestBefore
-	mutex.Lock()
+	mutexConf.Lock()
 	// for highestCreator, highestSeq := range highestBefore {
 	for j, valID := range validators.SortedIDs() {
 		noEventFound := true
@@ -1199,7 +2190,7 @@ func SetEventMedianTime(event *QITestEvent, lch *SimLachesis, validators *pos.Va
 			highestEvents[j] = QITestEvent{creationTime: 0} //if no event is observed for this validator, use 0 creation time
 		}
 	}
-	mutex.Unlock()
+	mutexConf.Unlock()
 
 	// the highest before event for each validator has been obtained, now sort highest before events according to creation time
 	sort.Slice(highestEvents, func(i, j int) bool {
@@ -1218,4 +2209,145 @@ func SetEventMedianTime(event *QITestEvent, lch *SimLachesis, validators *pos.Va
 		}
 	}
 	event.medianTime = median
+}
+
+func NewCircularBuffer(size int) *CircularBuffer {
+	return &CircularBuffer{
+		buffer: make([]blockGasPerformance, size),
+		head:   0,
+		tail:   0,
+		count:  0,
+		size:   size,
+	}
+}
+func (cb *CircularBuffer) Add(item blockGasPerformance) {
+	if cb.IsFull() {
+		cb.Remove(0)
+	}
+	cb.buffer[cb.tail] = item
+	cb.tail = (cb.tail + 1) % cb.size
+	cb.count++
+}
+
+func (cb *CircularBuffer) InsertGas(item blockGasPerformance, target float64) bool {
+	if cb.count >= cb.size {
+		// if cb.buffer[cb.head].blockKey.Frame < item.blockKey.Frame {
+		if math.Abs(cb.buffer[cb.head].gasUsed-target) > math.Abs(item.gasUsed-target) {
+			cb.Remove(0) //remove item from the buffer
+		} else {
+			return false // existing items are preferred over new item
+		}
+	}
+	pos := cb.head //start from oldest element
+	for i := 0; i < cb.count; i++ {
+		// if cb.buffer[pos].blockKey.Frame > item.blockKey.Frame {
+		if math.Abs(cb.buffer[pos].gasUsed-target) < math.Abs(item.gasUsed-target) {
+			break
+		} else {
+			pos = (pos + 1) % cb.size
+		}
+	}
+	if pos < 0 || pos > cb.count {
+		return false
+	}
+	for i := cb.count; i > pos; i-- {
+		fromIndex := (cb.head + i - 1) % cb.size
+		toIndex := (cb.head + i) % cb.size
+		cb.buffer[toIndex] = cb.buffer[fromIndex]
+	}
+	index := (cb.head + pos) % cb.size
+	cb.buffer[index] = item
+	cb.tail = (cb.tail + 1) % cb.size
+	cb.count++
+	return true
+}
+
+func (cb *CircularBuffer) InsertFrame(item blockGasPerformance) bool {
+	if cb.count >= cb.size {
+		if cb.buffer[cb.head].blockKey.Frame < item.blockKey.Frame {
+			// if math.Abs(cb.buffer[cb.head].gasUsed-target) > math.Abs(item.gasUsed-target) {
+			cb.Remove(0) //remove item from the buffer
+		} else {
+			return false // existing items are preferred over new item
+		}
+	}
+	pos := cb.head //start from oldest element
+	for i := 0; i < cb.count; i++ {
+		if cb.buffer[pos].blockKey.Frame > item.blockKey.Frame {
+			// if math.Abs(cb.buffer[pos].gasUsed-target) < math.Abs(item.gasUsed-target) {
+			break
+		} else {
+			pos = (pos + 1) % cb.size
+		}
+	}
+	if pos < 0 || pos > cb.count {
+		return false
+	}
+	for i := cb.count; i > pos; i-- {
+		fromIndex := (cb.head + i - 1) % cb.size
+		toIndex := (cb.head + i) % cb.size
+		cb.buffer[toIndex] = cb.buffer[fromIndex]
+	}
+	index := (cb.head + pos) % cb.size
+	cb.buffer[index] = item
+	cb.tail = (cb.tail + 1) % cb.size
+	cb.count++
+	return true
+}
+
+func (cb *CircularBuffer) Remove(pos int) bool {
+	if pos < 0 || pos >= cb.count {
+		return false
+	}
+
+	for i := pos; i < cb.count-1; i++ {
+		fromIndex := (cb.head + i + 1) % cb.size
+		toIndex := (cb.head + i) % cb.size
+		cb.buffer[toIndex] = cb.buffer[fromIndex]
+	}
+	cb.tail = (cb.tail - 1 + cb.size) % cb.size
+	cb.count--
+	return true
+}
+
+func (cb *CircularBuffer) IsEmpty() bool {
+	return cb.count <= 0
+}
+
+func (cb *CircularBuffer) IsFull() bool {
+	return cb.count >= cb.size
+}
+
+func (cb *CircularBuffer) Get(position int) blockGasPerformance {
+	return cb.buffer[(cb.head+position)%cb.size]
+}
+
+func (cb *CircularBuffer) Clear() {
+	for cb.Remove(0) {
+	}
+}
+
+func linearRegressionLSE(series []Point) (float64, float64) {
+
+	q := len(series)
+
+	if q == 0 {
+		return 0.0, 0.0
+	}
+
+	p := float64(q)
+
+	sum_x, sum_y, sum_xx, sum_xy := 0.0, 0.0, 0.0, 0.0
+
+	for _, p := range series {
+		sum_x += p.X
+		sum_y += p.Y
+		sum_xx += p.X * p.X
+		sum_xy += p.X * p.Y
+	}
+
+	slope := (p*sum_xy - sum_x*sum_y) / (p*sum_xx - sum_x*sum_x)
+	intercept := (sum_y / p) - (slope * sum_x / p)
+
+	return slope, intercept
 }
